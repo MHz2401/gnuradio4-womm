@@ -107,11 +107,14 @@ enumerate (`SoapySDRUtil --find`).
 
 ---
 
-## Not yet measured
+## Measurement status
 
-No performance claim is made here. Phase 3.5 has not run: no scaling curve, no ablation, no
-comparison. The build-time and RSS figures above are single observations, not medians over
-repeated runs, and are labelled as such.
+The Phase 3 build-time and RSS figures above are **single observations**, not medians over
+repeated runs, and are labelled as such. They are process metrics, not performance claims.
+
+The Phase 3.5 scaling curve below **is** a performance measurement: median and half-spread over
+7 runs per point. No optimisation has been applied, and no ablation has yet separated the three
+candidate mechanisms, so nothing below should be read as a diagnosis of *which* one dominates.
 
 ---
 
