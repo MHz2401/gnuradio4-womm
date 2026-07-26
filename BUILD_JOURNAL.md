@@ -93,3 +93,49 @@ still needs a `-###` check before any A/B comparison.
 
 ## Pending — GATE 1
 `MANIFEST.md` awaiting approval. Nothing fetched or installed.
+
+---
+
+## 2026-07-25/26 — Phase 2 complete, Phase 3 baseline
+
+### D6. Prefix moved OUTSIDE the repository
+`.womm-prefix/` inside the source tree broke gnuradio4's configure: `gr-libsoundio` is an exported
+INTERFACE target and CMake rejects INTERFACE include/link paths located under the source dir
+("prefixed in the source directory"). Prefix is now `../womm-prefix`, a sibling.
+**Why this way:** the alternative was patching upstream CMake to wrap paths in `$<BUILD_INTERFACE:>`
+— upstream drift for a purely local layout choice.
+**Reverse:** change `WOMM_PREFIX` in `scripts/env.sh` and `PREFIX` in `scripts/build-prefix.sh`.
+
+### D7. SoapyUHD patched — two changes, three lines
+`patches/womm/SoapyUHD-0001-cxx17-for-uhd-4.10.patch` and `-0002-boost-190-lexical-cast.patch`.
+Upstream's `set(CMAKE_CXX_STANDARD 14)` cannot be overridden by `-D`; UHD 4.10 headers need C++17.
+Boost 1.90 no longer provides `lexical_cast` transitively.
+**Reverse:** delete the patch files; `stage_patched()` applies whatever is present.
+
+### Two errors made and corrected, recorded so they are not repeated
+1. A `sed` insertion of the Boost include mangled `SoapyUHDDevice.cpp` — the file had no
+   `#include <boost` to anchor on, so the empty address made `a\` append after **every** line:
+   1162 copies, file doubled. It compiled cleanly because include guards make repeats no-ops.
+   Redone with an asserted-unique anchor. **Lesson: verify line counts after scripted edits.**
+2. The first GATE 2 isolation proof used `env -i`, which stripped the environment so the login
+   shell never rebuilt the Homebrew/CMake.app PATH. It reported four false "differences".
+   **Lesson: a proof harness that does not reproduce the baseline's conditions proves nothing.**
+
+### Vendoring integrity — two silent corruptions caught
+- `core.autocrlf=input` stripped CR from vendored files on commit (180 CRLF on disk, 0 in the
+  blob). Fixed with `.gitattributes: vendor/** -text`.
+- Plain `git add vendor` dropped 59 files; gnuradio4's own `.gitignore` rule `lib/` swallowed all
+  of `vendor/SoapySDR/lib/`, leaving an unbuildable snapshot. Fixed by force-adding.
+- `scripts/verify-vendor.sh` now checks committed content against `vendor/MANIFEST.lock`, so both
+  classes fail loudly.
+
+### GATE 2 — isolation proven
+`which -a` for 12 tools in an unactivated shell is byte-identical to the Phase 0 baseline. No
+`WOMM_PREFIX`/PATH leakage. Nothing written outside the prefix. No formula installed or linked.
+Brew count 231 -> 198 is the owner's own `gnuradio` uninstall taking orphaned deps; every brew
+command run here was read-only (`list`, `info`, `--prefix`, `--version`, `autoremove --dry-run`).
+
+### Phase 3 baseline — see RESULTS.md
+Build 603 s, 1850 targets, 0 errors, **0 compiler warnings**, peak RSS 11.4 GiB across 16 jobs.
+Tests 100/101. The single failure, `qa_SoapySource`, is environmental: the test hardcodes
+`{"device", "rtlsdr"}` and has no skip guard. B210 sample streaming confirmed end to end.

@@ -6,9 +6,9 @@
 set -euo pipefail
 
 readonly REPO_ROOT="/Users/whom/dvel/ghzhub/GR4-fork/gnuradio4-womm"
-readonly PREFIX="${REPO_ROOT}/.womm-prefix"
-readonly BUILD_ROOT="${REPO_ROOT}/.womm-prefix/_build"
-readonly SRC_ROOT="${REPO_ROOT}/.womm-prefix/_src"
+readonly PREFIX="/Users/whom/dvel/ghzhub/GR4-fork/womm-prefix"
+readonly BUILD_ROOT="/Users/whom/dvel/ghzhub/GR4-fork/womm-prefix/_build"
+readonly SRC_ROOT="/Users/whom/dvel/ghzhub/GR4-fork/womm-prefix/_src"
 readonly VENDOR="${REPO_ROOT}/vendor"
 
 # Apple clang 21 is tried first: it installs nothing and leaves no footprint.

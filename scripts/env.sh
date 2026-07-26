@@ -7,7 +7,7 @@
 # formula is linked. Deactivate by starting a new shell.
 
 WOMM_ROOT="/Users/whom/dvel/ghzhub/GR4-fork/gnuradio4-womm"
-WOMM_PREFIX="${WOMM_ROOT}/.womm-prefix"
+WOMM_PREFIX="/Users/whom/dvel/ghzhub/GR4-fork/womm-prefix"
 
 if [ ! -f "${WOMM_ROOT}/CLAUDE.md" ]; then
   echo "env.sh: ${WOMM_ROOT} is not the gnuradio4 root" >&2
@@ -31,3 +31,8 @@ case ":${PATH}:" in
 esac
 
 echo "womm prefix active: ${WOMM_PREFIX}"
+
+# NOTE: the prefix deliberately lives OUTSIDE the repository. gnuradio4 exports
+# gr-libsoundio as an INTERFACE target, and CMake errors on INTERFACE include
+# or link paths located under the source directory. Keeping the prefix as a
+# sibling avoids patching upstream CMake for a purely local layout choice.
