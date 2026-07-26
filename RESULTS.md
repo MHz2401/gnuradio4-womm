@@ -385,3 +385,20 @@ the block-level path may never have been exercised end-to-end by anyone.
 
 That first wedge is worth noting beyond this harness: it is precisely the "threads outlive the
 graph, machine needs a reboot" failure mode, reachable by ordinary misuse of the API.
+
+### Lead for next session (owner's hypothesis, not yet tested)
+
+The Soapy abstraction may omit device-specific stream-setup semantics that a USRP requires and a
+repurposed TV tuner does not. Concrete form: `activateStream(flags, timeNs, numElems)` — **UHD
+treats a non-zero `numElems` as a finite burst; RTL-SDR ignores the argument.** If `SoapySource`
+passes a burst count, or does not express continuous-stream intent, an RTL-SDR would appear to
+work while a B210 delivers nothing. That matches the observed symptom exactly.
+
+Order for next session:
+1. Read how `SoapySource` calls `activateStream` (`SoapyRaiiWrapper.hpp`, activate path).
+2. Run `SoapySource` against the synthetic `LoopbackDevice` — no hardware, settles
+   "my config" vs "the block".
+3. Only then return to the B210.
+
+Also open, and may need a decision: HackRF Pro reportedly adds UHD-like clocking, so it would
+likely hit the same path — relevant if the hardware list grows.
