@@ -76,12 +76,44 @@ the system.
 | Artifact | Upstream | Proposed ref | Why needed |
 |---|---|---|---|
 | **cpp-httplib** | `github.com/yhirose/cpp-httplib` | `v0.18.1` — *matching the tree's own Emscripten pin* | required, no native fetch path (§2 item 3) |
-| **libsoundio** | `github.com/andrewrk/libsoundio` | latest release — **to confirm** | required unconditionally; provides the CoreAudio path |
 | **SoapySDR** | `github.com/pothosware/SoapySDR` | `0.8.1` — matches the ABI the gr4 wrapper checks and the version previously installed here | gr4's **only** radio path |
 | **SoapyUHD** | `github.com/pothosware/SoapyUHD` | latest compatible with UHD 4.10.0.0 — **to confirm** | the only route to the three attached B210s |
 
 I will report the exact resolved tag, commit SHA and archive checksum for each **before** building,
 and record them in `BUILD_JOURNAL.md`.
+
+### 4c. libsoundio — VENDORED, not fetched (revised per owner direction)
+
+**Changed from §4b at the owner's direction.** libsoundio is *not* to be pulled from an upstream
+URL at build time. Instead: take one well-marked MIT-licensed snapshot, vendor it, and
+self-maintain it only insofar as underlying libraries (i.e. CoreAudio) change.
+
+Engineering rationale: an MIT grant on a *received copy* cannot be retroactively revoked. A future
+release could be relicensed, but the snapshot we take under MIT remains MIT. Vendoring therefore
+converts an open-ended dependency on a third party's future licensing into a one-time,
+permanently-granted one. The `LICENSE` file is vendored alongside the source, unmodified, so the
+grant travels with the code.
+
+**Implementation follows the existing in-tree `exprtk` pattern** (`CMakeLists.txt:466-481`):
+vendored upstream sources plus **our own** `add_library(... STATIC ...)` and compile options,
+bypassing upstream's build system entirely.
+
+Three consequences, all favourable:
+1. We never invoke libsoundio's `cmake_minimum_required(VERSION 2.8.5)`, so the CMake-4.x
+   incompatibility disappears permanently and `patches/libsoundio-cmake4.diff` becomes moot rather
+   than merely dead.
+2. We compile **only the CoreAudio backend** plus core files — roughly `soundio.c`, `util.c`,
+   `os.c`, `channel_layout.c`, `ring_buffer.c`, `dummy.c`, `coreaudio.c`. ALSA, PulseAudio, JACK
+   and WASAPI backends are never compiled. Smaller auditable surface, less to maintain. *(Exact
+   file list to be confirmed against the snapshot; the shape is what matters here.)*
+3. `pkg_search_module` / `find_library` discovery is bypassed, so the `FATAL_ERROR` at
+   `CMakeLists.txt:581` is satisfied by our own target rather than by a system package.
+
+*Longer term, and explicitly not this project's job:* a clean CoreAudio wrapper that replaces
+libsoundio entirely would remove the dependency. Noted as a direction, not scheduled.
+
+**Approval still needed** for the one-time fetch of that snapshot — it is a network fetch like any
+other, and its resolved commit SHA, checksum and `LICENSE` text will be recorded before use.
 
 ### 4c. Struck from the manifest
 
@@ -92,23 +124,36 @@ and record them in `BUILD_JOURNAL.md`.
 - **brew `llvm@20`** — held in reserve. Apple clang 21 is tried first at zero cost; this becomes a
   manifest item only if that fails.
 
-### 4d. Separate approval, not a dependency
+### 4e. Separate approvals — decided
 
-- **`upstream` remote** (`github.com/gnuradio/gnuradio4`, fetch-only, never push). Needed only for
-  future resyncs — since you forked this morning, `DRIFT.md` already starts empty without it.
-- **Sandbox network egress** for UDP — unrelated to dependencies; needed only if Ethernet
-  Octoclock-G work proceeds.
+- **`upstream` remote** (`github.com/gnuradio/gnuradio4`, fetch-only, never push) — **APPROVED**,
+  subject to the snapshot-first policy in §8.
+- **Sandbox UDP egress** — **granted on a whitelist basis when needed**, conditional on this
+  session no longer listing `codpcl_LCS` as the project working directory. Not needed until
+  Ethernet Octoclock-G work begins, which is currently out of scope.
+
+### 4f. Emscripten — assessed, no action
+
+`EMSCRIPTEN` is **not an option and cannot be "pulled in" or "cut out."** Verified: no
+`option()` for it exists anywhere; CMake sets the variable only when the Emscripten toolchain file
+is used. On a native build it is false, and all Emscripten code is behind `#if
+defined(__EMSCRIPTEN__)` compile-time branches that never compile. Keeping it costs **zero**;
+removing it would mean deleting upstream code for no benefit — pure drift.
+
+**Verdict: leave it alone.** The only way it touches us is that `cpp-httplib`'s FetchContent is
+gated `if(EMSCRIPTEN)` (§2 item 3), which is an upstream gap in *native* dependency handling rather
+than a cost imposed by Emscripten.
 
 ---
 
 ## 5. Provenance findings (§7 requires these be raised, not footnoted)
 
-1. **`libsoundio` is effectively unmaintained and is a personal repository.** It is required
-   unconditionally by every build. Its own CMake is old enough that the tree once carried a patch
-   bumping `cmake_minimum_required` from 2.8.5 → 3.5 for CMake 4.x compatibility
-   (`patches/libsoundio-cmake4.diff`). **This is the weakest link in the dependency tree** and it
-   sits on the critical path. We are unaffected today (CMake 3.28.1), but it is the item most
-   likely to become unbuildable on a future toolchain.
+1. **`libsoundio` is effectively unmaintained and is a personal repository** — required
+   unconditionally by every build, and therefore on the critical path. Its own CMake is old enough
+   that the tree once carried a patch bumping `cmake_minimum_required` from 2.8.5 → 3.5 for CMake
+   4.x compatibility (`patches/libsoundio-cmake4.diff`). It was the weakest link in the dependency
+   tree. **RESOLVED by §4c** — vendoring a pinned MIT snapshot and compiling it with our own build
+   rules removes both the build-system fragility and the exposure to future relicensing.
 2. **`patches/libsoundio-cmake4.diff` is dead code** — zero references tree-wide. It implies a
    libsoundio FetchContent path existed and was removed, leaving libsoundio system-only.
 3. **Three of four in-tree pins are tags, not SHAs** (`vir-simd`, `cpp-httplib`, `cpr`). Tags are
@@ -145,6 +190,35 @@ No system state is modified, so there is nothing else to undo.
 
 ## 7. What happens after approval
 
-1. Fetch §4a/§4b artifacts; record resolved SHAs + checksums in `BUILD_JOURNAL.md`.
+1. Fetch §4a/§4b/§4c artifacts; record resolved SHAs + checksums in `BUILD_JOURNAL.md`.
 2. Build the isolated prefix. Run the isolation proof. **GATE 2.**
 3. Phase 3: stock-config baseline build + full ctest, Apple clang 21 first.
+
+---
+
+## 8. Upstream sync policy (approved)
+
+Governs the fetch-only `upstream` remote. **Check often, update rarely and deliberately.**
+
+**Before any fetch or merge from upstream** — snapshot the current known-good downstream state
+first, so there is always a labelled point to return to:
+
+```
+git tag womm-known-good/<YYYY-MM-DD>  womm/m2ultra-validated
+git branch womm-snapshot/<YYYY-MM-DD> womm/m2ultra-validated
+```
+
+Cheap, and no case has been found where it is impractical.
+
+**Cadence.** The *check* is periodic and read-only — compare `upstream/main` to our base and
+summarise what landed. The *update* is event-driven, triggered by one of:
+- **mass of code** — enough has accumulated that deferring makes reconciliation harder than doing it, or
+- **impact of functionality** — something lands that materially affects this machine, this
+  toolchain, or the four Darwin divergences in the recon report.
+
+**Explicitly not a trigger:** volume alone. Platform work irrelevant to an M2 Ultra — new
+single-board-computer variants, other-architecture backends, CI changes for platforms we do not
+build — is skipped regardless of line count, and the decision is recorded rather than silently taken.
+
+**Never:** push to any remote; merge into `main`; rebase or rewrite anything already published.
+`main` stays a clean mirror of `origin/main`.

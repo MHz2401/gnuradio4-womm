@@ -25,6 +25,17 @@ unavoidable, keep it small, isolated, and listed here.
 
 These never conflict on rebase. No reconciliation path needed.
 
+## Category A2 — planned, NOT yet done (pending GATE 1)
+
+Listed so it is not mistaken for completed work.
+
+| Planned | Shape | Reconciliation path |
+|---|---|---|
+| Vendor `libsoundio` into `third_party/libsoundio/` with its unmodified `LICENSE`, built by **our own** CMake rules following the `exprtk` pattern (`CMakeLists.txt:466-481`) | new files + one `CMakeLists.txt` block; CoreAudio backend only | unnecessary if upstream vendors it, gains a `GR_ENABLE_AUDIO` opt-out, or a native CoreAudio backend replaces it |
+
+Rationale in `MANIFEST.md` §4c. Side effect: bypassing libsoundio's own 2.8.5-era CMake makes
+`patches/libsoundio-cmake4.diff` permanently moot rather than merely dead.
+
 ## Category B — modifications to upstream files
 
 | # | File | Change | Why | What would make it unnecessary |
