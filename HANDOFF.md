@@ -217,11 +217,29 @@ Still to write: `scripts/build.sh`, `scripts/verify.sh`, `PORTABILITY.md`.
 
 <!-- Complete these at ~90% context. Leave the headings; replace the bodies. -->
 
-### 7.1 Outcome of the activation diagnostic
-*(which of the three branches in §4.1 it landed on, and what followed)*
+### 7.1 Outcome of the activation diagnostic — RESOLVED
+Instrumenting `ioReadLoop` showed `state=STOPPED` at a 2 s duration and `state=RUNNING` with
+`ret=8192` reads at 12 s. **My harness, not gnuradio4.** End-to-end now works; see RESULTS.md
+Phase 5. All instrumentation reverted, `SoapySource.hpp` byte-identical to upstream.
 
-### 7.2 Any new invariants
-*(promote from OPEN to INVARIANT anything settled today)*
+**B210 sustains 16 MS/s complex lossless** through 8 DSP stages; saturates ~25-27 MS/s where UHD
+reports overflow. That ceiling is NOT the DSP layer (168 Msps single-chain) — it is
+USB/UHD/`ioReadLoop`.
 
-### 7.3 Revised next-step ordering
-*(what the next session should do first, given today's result)*
+### 7.2 New invariants
+- **I-11: device-touching tests are NOT parallel-safe.** `DeviceRegistry::findOrCreate` shares one
+  device instance per kwargs, so `qa_SoapyIntegration` and `qa_SoapyLoopback` interfere under
+  `ctest -j`. Run them serially.
+- **I-12: measure the streaming interval, never total elapsed.** Device init (~2.5 s on a B210)
+  and graph construction both dwarf short runs. This error invalidated two separate measurements.
+- **I-13: the test suite is not deterministic.** `qa_BasicFileIo` varies 8.8 s → 48 s → timeout on
+  identical code. The 5-clean-run stability gate is currently unmeetable.
+
+### 7.3 Next-step ordering
+1. **Diagnose `qa_BasicFileIo`'s 34× variance.** Blocks the stability gate and may share a root
+   cause with the parallel-scaling plateau (thread starvation; no Darwin QoS).
+2. **Serialise device tests** — ctest `RESOURCE_LOCK` or a fixture; upstream-shaped, no patch.
+3. **Push the radio ceiling** if higher rates are wanted: USB/UHD/`ioReadLoop` (fixed 8192-sample
+   reads), *not* the DSP layer.
+4. Deferred: graph-lifecycle memory (8 GiB / 1.7 M page reclaims per 7 builds), parallel scaling
+   (2.07× from 16 chains), `PORTABILITY.md`.

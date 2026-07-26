@@ -522,3 +522,53 @@ Harness: `blocks/sdr/src/womm_b210_sweep.cpp`. Reproduce:
 source scripts/env.sh
 ./build-fixed/blocks/sdr/src/womm_b210_sweep
 ```
+
+---
+
+## Test-suite stability — NOT deterministic. Blocks the stability criterion.
+
+Full-suite results for **identical code** (`build-fixed`, post-cherry-pick, `SoapySource.hpp`
+byte-identical to upstream):
+
+| Run | Mode | Result | Failures |
+|---|---|---|---|
+| A | `-j8` | 101/102 | `qa_SoapySource` (SIGTRAP) |
+| B | `-j8` | 100/102 | `qa_SoapySource` (SEGFAULT), `qa_SoapyIntegration` |
+| C | **serial** | 100/102 | `qa_SoapySource` (SEGFAULT), `qa_BasicFileIo` (**Timeout**) |
+
+### Two distinct instabilities
+
+**1. Device contention under parallel ctest.** Run B's `qa_SoapyIntegration` failure was
+*"2-channel TX→RX round-trip … channel 0: got 0, expected at least 4500"*
+(`qa_SoapyIntegration.cpp:399`). It shares the synthetic loopback device with `qa_SoapyLoopback`,
+and `DeviceRegistry::findOrCreate` returns the **same instance** for matching kwargs — so two
+concurrently-running tests interfere. Re-running the Soapy tests **serially** gives 3/4 with only
+the known environmental failure. **Device-touching tests are not parallel-safe.**
+
+**2. `qa_BasicFileIo` has ~34× run-to-run variance.** Same binary, same machine:
+
+| Run | Duration |
+|---|---|
+| baseline `-j8` | 48.03 s |
+| fixed `-j8` | **8.84 s** |
+| fixed serial | **Timeout (>300 s)** |
+
+The serial run — which should be the *least* contended — was the worst. That is not contention;
+it is non-determinism in the test or in the runtime beneath it. Not yet diagnosed.
+
+`qa_SoapySource`'s crash mode also varies (SIGTRAP vs SEGFAULT) for what is the same underlying
+environmental cause (absent RTL-SDR).
+
+### Consequence for the acceptance criteria
+
+The original brief requires **N ≥ 5 consecutive clean full-suite runs** for "stable". **We cannot
+currently meet that**, and no amount of re-running fixes it — the variance is real. Prerequisites:
+
+1. Serialise device-touching tests (a ctest RESOURCE_LOCK or a test fixture would do it
+   upstream-shaped, no source patch).
+2. Diagnose `qa_BasicFileIo`'s variance. Given the scheduler's spin-without-backoff behaviour and
+   absent Darwin QoS, starvation of a file-I/O thread is a plausible mechanism and would connect
+   this to the parallel-scaling question.
+3. Only then attempt the 5-run stability gate.
+
+Reported rather than worked around. No test has been disabled, retried, or excluded.
