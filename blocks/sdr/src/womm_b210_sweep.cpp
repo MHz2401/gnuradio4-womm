@@ -35,6 +35,8 @@ inline constexpr double      kDurationSec  = 2.0;    // per rate point
 inline constexpr double      kCentreFreqHz = 100e6;  // FM band, benign and always populated
 inline constexpr double      kRxGainDb     = 30.0;
 inline constexpr double      kB210MaxRate  = 61.44e6;
+inline bool                  kMinimalCfg   = false; // argv[4]=min -> device only
+inline std::string           kDevice       = "uhd";  // argv[3] overrides (e.g. "loopback")
 
 void mustConnect(auto&& r, std::string_view what) {
     if (!r.has_value()) {
@@ -56,16 +58,35 @@ Point runAtRate(double rateHz) {
     using namespace std::string_literals;
 
     gr::Graph graph;
-    auto&     src = graph.emplaceBlock<SoapySource<T, 1UZ>>({
-            {"device", "uhd"s},
-            {"num_channels", gr::Size_t{1}},
-            {"rx_antennae", std::vector<std::string>{"RX2"s}}, // per SoapySDRUtil --probe
-            {"sample_rate", static_cast<float>(rateHz)},
-            {"frequency", std::vector{kCentreFreqHz}},
-            {"rx_gains", std::vector{kRxGainDb}},
-            {"verbose_overflow", false},
-            {"max_overflow_count", static_cast<gr::Size_t>(50U)},
-    });
+    // control: "constant" swaps in a known-good source through the identical
+    // harness, so a zero here indicts the measurement rather than the block
+    if (kDevice == "constant") {
+        auto& csrc = graph.emplaceBlock<gr::testing::ConstantSource<T>>({{"n_samples_max", gr::Size_t{0}}});
+        auto& csink = graph.emplaceBlock<gr::testing::CountingSink<T>>();
+        mustConnect(graph.connect(csrc, "out"s, csink, "in"s), "constant->sink");
+        auto* cp = std::addressof(csink);
+        gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::multiThreaded> csched;
+        if (auto r = csched.exchange(std::move(graph)); !r) { return {rateHz, 0.0, 0.0, false}; }
+        const auto c0 = std::chrono::steady_clock::now();
+        std::thread cr([&] { std::ignore = csched.runAndWait(); });
+        std::this_thread::sleep_for(std::chrono::duration<double>(kDurationSec));
+        csched.requestStop();
+        cr.join();
+        const double ce = std::chrono::duration<double>(std::chrono::steady_clock::now() - c0).count();
+        return {rateHz, ce, static_cast<double>(cp->count) / ce, true};
+    }
+
+    // MINIMAL settings on purpose: each settings-driven reinitDevice() bumps
+    // DeviceRegistry::pendingUsers, but registerActivation decrements it only
+    // once, so extra acquisitions can leave activation permanently unfired.
+    gr::property_map srcCfg{{"device", kDevice}};
+    if (!kMinimalCfg) {
+        srcCfg["num_channels"]       = gr::Size_t{1};
+        srcCfg["sample_rate"]        = static_cast<float>(rateHz);
+        srcCfg["frequency"]          = std::vector{kCentreFreqHz};
+        srcCfg["rx_gains"]           = std::vector{kRxGainDb};
+    }
+    auto& src = graph.emplaceBlock<SoapySource<T, 1UZ>>(srcCfg);
 
     DivideConst<T>* last = nullptr;
     for (std::size_t i = 0UZ; i < kDepth; ++i) {
@@ -130,9 +151,15 @@ int main(int argc, char* argv[]) {
     if (argc > 2) {
         kDepth = static_cast<std::size_t>(std::atol(argv[2]));
     }
+    if (argc > 3) {
+        kDevice = argv[3];
+    }
+    if (argc > 4) {
+        kMinimalCfg = (std::string(argv[4]) == "min");
+    }
 
     std::println("womm B210 end-to-end rate sweep");
-    std::println("chain: SoapySource(uhd, complex<float>) -> {}x(mul,div) -> CountingSink", kDepth);
+    std::println("chain: SoapySource({}, complex<float>) -> {}x(mul,div) -> CountingSink", kDevice, kDepth);
     std::println("{:.1f} s per point, centre {:.1f} MHz, gain {:.0f} dB\n", kDurationSec, kCentreFreqHz / 1e6, kRxGainDb);
     std::println("{:>10}  {:>9}  {:>10}  {:>12}  {:>8}  {:>9}", "rate_Msps", "xB210", "elapsed_s", "achieved_Msps", "ratio", "verdict");
 

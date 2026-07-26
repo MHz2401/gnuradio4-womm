@@ -402,3 +402,64 @@ Order for next session:
 
 Also open, and may need a decision: HackRF Pro reportedly adds UHD-like clocking, so it would
 likely hit the same path — relevant if the hardware list grows.
+
+---
+
+## Phase 5 follow-up — `SoapySource` yields no samples. Now well-controlled.
+
+Ran the overnight experiments. The finding is firmer and two hypotheses are dead.
+
+### Control establishes the harness is sound
+
+| Source | Device | Achieved |
+|---|---|---|
+| `SoapySource` | B210 (real) | **0 Msps** |
+| `SoapySource` | `LoopbackDevice` (synthetic, no hardware) | **0 Msps** |
+| `SoapySource` | loopback, minimal settings (device only) | **0 Msps** |
+| **`ConstantSource`** | — (control, identical harness) | **573 Msps** |
+
+Same graph shape, same `requestStop` path, same `CountingSink::count` read. The measurement is
+sound; `SoapySource` is the variable. It is **not** the B210, not UHD, not USB, not the DSP chain,
+and not my instrumentation.
+
+### Hypothesis 1 — `activateStream` burst semantics: KILLED
+
+Owner's hypothesis was that Soapy omits stream-setup a USRP needs, concretely a non-zero
+`numElems` making UHD treat the stream as a finite burst while an RTL-SDR ignores it.
+`SoapySource.hpp:182` calls `_rxStream.activate()` with **defaults — `flags=0, timeNs=0,
+numElems=0`** (`SoapyRaiiWrapper.hpp:750`). `numElems=0` is continuous-until-deactivated. The
+call is correct. Also independently ruled out by the loopback failing the same way.
+
+### Hypothesis 2 — deferred activation never fires: PLAUSIBLE, NOT CONFIRMED
+
+`SoapySource::start()` does not activate the stream directly. It registers a callback:
+
+```cpp
+reinitDevice();
+if (!_device.get() || !_rxStream.get()) { return; }        // silent
+DeviceRegistry::registerActivation(_devKwargs, [this]{ activate(); start ioReadLoop(); });
+```
+
+`registerActivation` (`SoapyRaiiWrapper.hpp:249-266`) fires only when `pendingUsers` reaches
+zero. `findOrCreate` sets it to 1 on first creation (`:245`) and **increments** on every
+subsequent acquisition (`:224`); `registerActivation` decrements **once** (`:259`). So any extra
+device acquisition leaves the count above zero and the stream is never activated — with no error
+on either path.
+
+I predicted settings-driven `reinitDevice()` calls would cause the extra increment, and tested it
+by constructing with **device only**. **Still zero samples, so that prediction is wrong.** The
+mechanism remains plausible from the code but is unproven; the extra acquisition, if any, comes
+from somewhere else.
+
+### Decisive next step (5 minutes)
+
+Instrument whether the activation callback runs at all — a single print inside the
+`registerActivation` lambda, plus one on the `!_device.get()` early return. That splits three
+ways: callback never fires (hypothesis 2, find the extra increment), callback fires but
+`ioReadLoop` produces nothing (look at `readStream`), or `start()` returns early (look at
+`reinitDevice`). No hardware needed; loopback reproduces it.
+
+Worth noting how this went unseen: every Soapy file is excluded from all upstream CI,
+`qa_SoapySource`'s only device case hardcodes an absent RTL-SDR, `qa_SoapyIntegration` self-skips
+without a LimeSDR, and `qa_SoapyLoopback` exercises the raw device rather than the block. The
+block-level path appears never to have been run to completion by anyone.
