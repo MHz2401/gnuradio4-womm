@@ -112,3 +112,71 @@ enumerate (`SoapySDRUtil --find`).
 No performance claim is made here. Phase 3.5 has not run: no scaling curve, no ablation, no
 comparison. The build-time and RSS figures above are single observations, not medians over
 repeated runs, and are labelled as such.
+
+---
+
+## Phase 3.5 — the discriminating experiment
+
+**Question (§0):** does aggregate throughput scale with independent parallel chains? If it scales,
+the DSP layer uses the machine and the ceiling is in the device/transport path. If it plateaus
+early, the ceiling is in the runtime and no compiler tuning will move it.
+
+**Harness:** `core/benchmarks/womm_bm_scaling.cpp` — new file, written rather than modifying
+`bm_Scheduler.cpp`, which hard-pins the CPU pool to 2 threads (`:92`) and so cannot observe this
+machine. Pure feedforward (no feedback edge, avoiding the documented ~100× cliff). Each chain is
+`ConstantSource → 8×(MultiplyConst, DivideConst) → NullSink`, 1 M samples, 65536-sample buffers.
+CPU pool sized to chain count per data point. Median and half-spread over **7 runs**.
+`Simple<multiThreaded>`, Release, `-O3 -march=native`, Apple clang 21.
+
+| chains | threads | median (s) | spread (s) | Msps | ×B210 | speedup |
+|---|---|---|---|---|---|---|
+| 1 | 1 | 0.1175 | ±0.0120 | 8.5 | 0.14× | 1.00× |
+| 2 | 2 | 0.1317 | ±0.0119 | 15.2 | 0.25× | 1.79× |
+| 4 | 4 | 0.1609 | ±0.0189 | 24.9 | 0.40× | 2.93× |
+| 8 | 8 | 0.2969 | ±0.0475 | 26.9 | 0.44× | 3.16× |
+| 16 | 16 | 0.6477 | ±0.0587 | 24.7 | 0.40× | 2.91× |
+
+### Verdict: it plateaus early. The ceiling is in the runtime.
+
+Peak aggregate is **~27 Msps at 8 chains — a 3.16× speedup on a machine with 16 P-cores**. Ideal
+would be ~16×. Scaling is near-linear only to 2 chains (1.79×), already lossy at 4 (2.93× of an
+ideal 4×), and flat thereafter.
+
+**The 8→16 "regression" is inside the noise** — the spreads overlap (8 chains: 23.2–32.1 Msps;
+16 chains: 22.6–27.2 Msps). Do not read it as a real decline. The **plateau**, however, is well
+outside the noise: 4, 8 and 16 chains all land in a 24–27 Msps band while the offered work
+quadruples.
+
+**Growing spread is itself a signal:** ±0.012 s at 1–2 chains rising to ±0.059 s at 16, i.e. run-to-run
+variance grows with worker count — the signature of contention rather than clean parallel work.
+
+### Device-rate calibration
+
+Peak throughput is **0.44× the maximum rate of a single B210**. This machine cannot sustain even
+one radio at full rate through an 8-stage float graph.
+
+*This comparison is generous to gr4, not harsh:* the benchmark streams **real** `float`, while a
+B210 at 61.44 MS/s delivers **complex** samples — twice the data per sample. On like-for-like I/Q
+the shortfall would be roughly double.
+
+### What this rules in and out
+
+- **Compiler/codegen tuning is not the answer.** No `-march`, LTO or PGO setting recovers a 3.2×
+  ceiling on 16 P-cores. Hypothesis 5 is not the primary explanation. Phase 4 must not start with
+  codegen knobs.
+- **Consistent with per-hop cost dominating (hypothesis 1).** Single-chain 8.5 Msps through 16
+  blocks is ~136 M block-hops/s on one core — order 30 cycles per hop at this clock, for work that
+  is one multiply or one divide. The per-sample arithmetic is not what costs.
+- **Does not yet separate the three candidate mechanisms**: the macOS mirror-`memcpy`
+  (`CircularBuffer.hpp:352-378`), strided block→thread partitioning (`Scheduler.hpp:1378-1385`),
+  and the absent Darwin QoS path (`thread_affinity.hpp`, 15 sites). All three predict this shape.
+  Separating them is the remaining Phase 3.5 work, and they must be ablated **independently**
+  before being combined.
+
+### Reproduce
+
+```
+cd /Users/whom/dvel/ghzhub/GR4-fork/gnuradio4-womm
+source scripts/env.sh
+./build-baseline/core/benchmarks/womm_bm_scaling
+```
