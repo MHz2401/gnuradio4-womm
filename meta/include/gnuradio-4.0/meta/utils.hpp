@@ -72,6 +72,17 @@ T cast(U value) { /// gcc/clang warning suppressing cast
 
 namespace meta {
 
+// std::unordered_map::shrink_to_fit() is a libstdc++ extension, not standard; libc++ does not
+// provide it. The call is a non-binding capacity hint, so it is simply skipped where absent.
+// This must be a template: a requires-expression in a non-templated function has no substitution
+// context and hard-errors instead of yielding false.
+template<typename T>
+constexpr void shrinkIfSupported(T& container) {
+    if constexpr (requires { container.shrink_to_fit(); }) {
+        container.shrink_to_fit();
+    }
+}
+
 #if defined(NDEBUG)
 inline constexpr bool kDebugBuild = false;
 #else

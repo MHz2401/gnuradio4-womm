@@ -125,15 +125,71 @@ private:
 protected:
     using ProfileHandle = decltype(std::declval<TProfiler&>().forThisThread());
 
-    bool                          _valid{true};
-    std::size_t                   _nWatchdogsRunning{0};
+    // similar to std::stop_token but guarantees that the cooperating thread
+    // will not do any work after stop is requested. Performance makes sense for
+    // threads which mostly sleep / do little actual work. Requires that the
+    // thread cooperate by sleeping on the sleepVariable.
+    class WatchdogStopContext {
+    private:
+        std::condition_variable _sleepVariable;
+        std::mutex              _requestedMutex;
+        bool                    _stopRequested = false;
+
+    public:
+        [[nodiscard]] std::unique_lock<std::mutex> lock() { return std::unique_lock{_requestedMutex}; }
+        [[nodiscard]] std::condition_variable&     sleepVariable() { return _sleepVariable; }
+        void                                       requestStop() {
+            if (gr::atomic_ref(_stopRequested).load_acquire()) {
+                return; // hint, no need to take mutex
+            }
+
+            bool wasRequested = false;
+            {
+                auto lock    = std::unique_lock{_requestedMutex};
+                wasRequested = !_stopRequested;
+                gr::atomic_ref(_stopRequested).store_release(true);
+            }
+            if (wasRequested) {
+                _sleepVariable.notify_all();
+            }
+        }
+
+        /// only to be called while lock() is held
+        [[nodiscard]] bool stopRequested() const { return _stopRequested; }
+    };
+
+    struct WatchdogThreadHandle {
+        std::mutex                           mutex;
+        std::shared_ptr<WatchdogStopContext> context;
+
+        void stop() {
+            auto lock = std::unique_lock{mutex};
+            if (context) {
+                context->requestStop();
+            }
+        }
+
+        /// Stops the watchdog and creates a context for a new thread
+        std::shared_ptr<WatchdogStopContext> stopOldThreadAndGetNewContext() {
+            auto currentThreadContextLock = std::unique_lock{mutex};
+            if (context) {
+                context->requestStop();
+            }
+            context = std::make_shared<WatchdogStopContext>();
+            return context;
+        }
+    };
+
     meta::indirect<gr::Graph>     _graph{};
+    std::size_t                   _graphGeneration{0}; // incremented on exchange()
     TProfiler                     _profiler{};
     ProfileHandle                 _profilerHandler{_profiler.forThisThread()};
     std::shared_ptr<TaskExecutor> _pool{gr::thread_pool::Manager::instance().defaultCpuPool()};
     std::shared_ptr<gr::Sequence> _nRunningJobs = std::make_shared<gr::Sequence>();
     std::recursive_mutex          _executionOrderMutex; // only used when modifying and copying the graph->local job list
     std::shared_ptr<JobLists>     _executionOrder = std::make_shared<JobLists>();
+
+    WatchdogThreadHandle _lastWatchDogThread;
 
     std::mutex                               _zombieBlocksMutex;
     std::vector<std::shared_ptr<BlockModel>> _zombieBlocks;
@@ -176,15 +232,17 @@ protected:
 public:
     using base_t = Block<Derived>;
 
-    Annotated<gr::Size_t, "timeout", Unit<"ms">, Doc<"sleep timeout to wait if graph has made no progress ">>                  timeout_ms                      = 100U;
-    Annotated<gr::Size_t, "watchdog_timeout", Unit<"ms">, Doc<"sleep timeout for watchdog">>                                   watchdog_timeout                = 1000U;
-    Annotated<gr::Size_t, "timeout_inactivity_count", Doc<"number of inactive cycles w/o progress before sleep is triggered">> timeout_inactivity_count        = 5U;
-    Annotated<gr::Size_t, "process_stream_to_message_ratio", Doc<"number of stream to msg processing">>                        process_stream_to_message_ratio = 16U;
-    Annotated<std::string, "pool name", Doc<"default pool name">>                                                              poolName                        = std::string(gr::thread_pool::kDefaultCpuPoolId);
-    Annotated<std::size_t, "max_work_items", Doc<"number of work items per work scheduling interval (controls latency)">>      max_work_items                  = std::numeric_limits<std::size_t>::max(); // TODO: check whether we can keep this std::size_t or more consistently to gr::Size_t
-    Annotated<property_map, "sched_settings", Doc<"scheduler implementation specific settings">>                               sched_settings{};
+    Annotated<gr::Size_t, "timeout", Unit<"ms">, Doc<"sleep timeout to wait if graph has made no progress ">>                                           timeout_ms                      = 100U;
+    Annotated<gr::Size_t, "watchdog_timeout", Unit<"ms">, Doc<"sleep timeout for watchdog">>                                                            watchdog_timeout                = 1000U;
+    Annotated<gr::Size_t, "timeout_inactivity_count", Doc<"number of inactive cycles w/o progress before sleep is triggered">>                          timeout_inactivity_count        = 5U;
+    Annotated<gr::Size_t, "process_stream_to_message_ratio", Doc<"number of stream to msg processing">>                                                 process_stream_to_message_ratio = 16U;
+    Annotated<HouseKeepPolicy, "house_keeping_policy", Doc<"when to run buffer housekeeping: Light = none, Normal = riding the message-handling gate">> house_keeping_policy            = HouseKeepPolicy::Normal;
+    Annotated<HouseKeepDepth, "house_keeping_depth", Doc<"per-pass reclaim depth: Shallow = clear() only, Deep = clear() + shrink_to_fit()">>           house_keeping_depth             = HouseKeepDepth::Deep;
+    Annotated<std::string, "pool name", Doc<"default pool name">>                                                                                       poolName                        = std::string(gr::thread_pool::kDefaultCpuPoolId);
+    Annotated<std::size_t, "max_work_items", Doc<"number of work items per work scheduling interval (controls latency)">>                               max_work_items                  = std::numeric_limits<std::size_t>::max(); // TODO: check whether we can keep this std::size_t or more consistently to gr::Size_t
+    Annotated<property_map, "sched_settings", Doc<"scheduler implementation specific settings">>                                                        sched_settings{};
 
-    GR_MAKE_REFLECTABLE(SchedulerBase, timeout_ms, watchdog_timeout, timeout_inactivity_count, process_stream_to_message_ratio, max_work_items, poolName, sched_settings);
+    GR_MAKE_REFLECTABLE(SchedulerBase, timeout_ms, watchdog_timeout, timeout_inactivity_count, process_stream_to_message_ratio, house_keeping_policy, house_keeping_depth, max_work_items, poolName, sched_settings);
 
     constexpr static block::Category blockCategory = block::Category::ScheduledBlockGroup;
 
@@ -254,12 +312,7 @@ public:
         }
         waitDone();
 
-        gr::atomic_ref(_valid).store_release(false); // Mark as invalid
-
-        // the watchdog dereferences SchedulerBase, wait until it finishes
-        while (gr::atomic_ref(_nWatchdogsRunning).load_acquire() != 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        _lastWatchDogThread.stop();
 
         _executionOrder.reset(); // force earlier crashes if this is accessed after destruction (e.g. from thread that was kept running)
     }
@@ -281,6 +334,11 @@ public:
         if (this->state() == ERROR || this->state() == STOPPED) {
             reset(); // reset internal states
         }
+
+        // Watchdogs may read from _graph, potentially during the exchange() below
+        _lastWatchDogThread.stop();
+
+        gr::atomic_ref(_graphGeneration).fetch_add(1);
 
         auto oldGraph = std::exchange(_graph, std::move(newGraph));
 
@@ -483,10 +541,18 @@ public:
         return {};
     }
 
-    void waitDone() {
+    void waitDone(bool isCalledFromWorker = false) {
         [[maybe_unused]] const auto pe = _profilerHandler->startCompleteEvent("scheduler_base.waitDone");
-        while (_nRunningJobs->value() > 0UZ) {
+        while (_nRunningJobs->value() > (isCalledFromWorker ? 1UZ : 0UZ)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
+        }
+        // _nRunningJobs == 0 is the only quiescence point shared by the runAndWait /
+        // exchange / dtor teardown paths (stop() runs at REQUESTED_STOP, before the
+        // workers join). One Aggressive pass here returns slot storage to the
+        // allocator/pool while no work() can touch the buffers. Light opts out of all
+        // scheduler-driven housekeeping (intrinsic writer-pressure path only).
+        if (house_keeping_policy.value != HouseKeepPolicy::Light) {
+            graph::forEachBlock<TransparentBlockGroup>(*_graph, [](auto& block) { block->houseKeeping(HouseKeepPolicy::Aggressive, HouseKeepDepth::Deep); });
         }
     }
 
@@ -601,12 +667,12 @@ protected:
         // start watchdog
         auto ioThreadPool = gr::thread_pool::Manager::defaultIoPool();
 
-        // keep outside of the lambda, as ~SchedulerBase() might finish before watchdog even starts
-        gr::atomic_ref(_nWatchdogsRunning).fetch_add(1UZ);
+        ioThreadPool->execute([this, context = _lastWatchDogThread.stopOldThreadAndGetNewContext()] { this->runWatchDog(context, watchdog_timeout.value, timeout_inactivity_count.value); });
 
-        ioThreadPool->execute([this] { this->runWatchDog(watchdog_timeout.value, timeout_inactivity_count.value); });
+        // it is possible that a stray thread is still running due to it
+        // dispatching an exchange(), stopping only threads other than itself
+        waitDone();
 
-        assert(_nRunningJobs->value() == 0UZ);
         assert(!_executionOrder->empty());
         if constexpr (executionPolicy() == ExecutionPolicy::singleThreaded || executionPolicy() == ExecutionPolicy::singleThreadedBlocking) {
             static_cast<Derived*>(this)->poolWorker(0UZ, _executionOrder);
@@ -632,6 +698,12 @@ protected:
 
         nRunningJobs->incrementAndGet();
         nRunningJobs->notify_all();
+
+        on_scope_exit decrement = [nRunningJobs] {
+            std::ignore = nRunningJobs->subAndGet(1UZ);
+            nRunningJobs->notify_all();
+        };
+
         gr::thread_pool::thread::setThreadName(std::format("pW{}-{}", runnerID, gr::meta::shorten_type_name(this->unique_name)));
 
         [[maybe_unused]] auto profiler_handler = _profiler.forThisThread();
@@ -645,6 +717,7 @@ protected:
             std::ranges::copy(blocks, std::back_inserter(localBlockList));
         }
 
+        const auto            initialGeneration  = gr::atomic_ref(_graphGeneration).load_acquire();
         [[maybe_unused]] auto currentProgress    = this->_graph->progress().value();
         std::size_t           inactiveCycleCount = 0UZ;
         std::size_t           msgToCount         = 0UZ;
@@ -665,6 +738,9 @@ protected:
             if (hasMessagesToProcess) {
                 if (runnerID == 0UZ || nRunningJobs->value() == 0UZ) {
                     this->processScheduledMessages(); // execute the scheduler- and Graph-specific message handler only once globally
+                    if (initialGeneration != gr::atomic_ref(_graphGeneration).load_acquire()) {
+                        return; // we called exchange()
+                    }
                 }
 
                 // Zombies are cleaned per-thread, as we remove from the localBlockList as well.
@@ -674,6 +750,14 @@ protected:
                 adoptBlocks(runnerID, localBlockList);
 
                 std::ranges::for_each(localBlockList, &BlockModel::processScheduledMessages);
+                // Buffer housekeeping rides the same cadence as message handling. Light skips
+                // the scheduler-driven trigger entirely (intrinsic writer-pressure path still
+                // fires inside the buffer); Aggressive's post-consume hook is a follow-up.
+                if (house_keeping_policy.value != HouseKeepPolicy::Light) {
+                    const HouseKeepPolicy policy = house_keeping_policy.value;
+                    const HouseKeepDepth  depth  = house_keeping_depth.value;
+                    std::ranges::for_each(localBlockList, [policy, depth](auto& b) { b->houseKeeping(policy, depth); });
+                }
                 activeState = this->state();
                 msgToCount++;
             } else {
@@ -728,32 +812,26 @@ protected:
                 }
             }
         } while (lifecycle::isActive(activeState));
-        std::ignore = nRunningJobs->subAndGet(1UZ);
-        nRunningJobs->notify_all();
     }
 
-    void runWatchDog(std::size_t timeOut_ms, std::size_t timeOut_count) {
-        on_scope_exit _ = [this] { gr::atomic_ref(_nWatchdogsRunning).fetch_sub(1UZ); };
+    void runWatchDog(std::shared_ptr<WatchdogStopContext> context, std::size_t timeOut_ms, std::size_t timeOut_count) {
+        auto lock = context->lock();
+        if (context->stopRequested()) {
+            return;
+        }
 
         auto thisName = gr::meta::shorten_type_name(this->unique_name);
         gr::thread_pool::thread::setThreadName(std::format("WatchDog-{}", thisName));
 
-        const auto deadline      = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-        const auto checkInterval = std::chrono::milliseconds(std::max(timeout_ms / 10UZ, 1UZ));
-        while (gr::atomic_ref(_valid).load_acquire() && _nRunningJobs->value() == 0UZ && std::chrono::steady_clock::now() < deadline && lifecycle::isActive(this->state())) {
-            std::this_thread::sleep_for(checkInterval);
-        }
-
-        if (!gr::atomic_ref(_valid).load_acquire() || _nRunningJobs->value() == 0UZ || !lifecycle::isActive(this->state())) {
-            return; // abort watchdog: scheduler inactive or jobs already finished.
-        }
-
         std::size_t lastProgress = _graph->_progress->value();
         std::size_t nWarnings    = 0;
         do {
-            std::this_thread::sleep_for(std::chrono::milliseconds(timeOut_ms));
-            // check and increase progress if there hasn't been none.
+            context->sleepVariable().wait_for(lock, std::chrono::milliseconds(timeOut_ms));
+            if (context->stopRequested()) { // scheduler exited or a new watchdog was started
+                return;
+            }
 
+            // check and increase progress if there hasn't been none.
             std::size_t currentProgress = _graph->_progress->value();
             if ((_nRunningJobs->value() > 0UZ) && (currentProgress == lastProgress)) {
                 nWarnings++;
@@ -1239,9 +1317,34 @@ protected:
 
                     const auto originalState = this->state();
 
+                    // need to stop running scheduler before performing
+                    // exchange, otherwise exchange will do state change
+                    // operations expecting to be called from an external
+                    // thread, but this may be from worker thread (hence
+                    // waitDone(true) call)
+                    if (lifecycle::isActive(originalState)) {
+                        if (auto result = this->changeStateTo(REQUESTED_STOP); !result) {
+                            auto msg = std::format("Failed to request stop: {}", result.error());
+                            this->emitErrorMessage("propertyCallbackGraphGRC", msg);
+                            message.data = std::unexpected(Error{msg});
+                            return message;
+                        }
+                        waitDone(true); // wait for all *other* jobs to complete
+
+                        if (auto result = this->changeStateTo(STOPPED); !result) {
+                            auto msg = std::format("Failed to finish stopping scheduler: {}", result.error());
+                            this->emitErrorMessage("propertyCallbackGraphGRC", msg);
+                            message.data = std::unexpected(Error{msg});
+                            return message;
+                        }
+                    }
+                    assert(this->state() == STOPPED);
+
                     if (auto result = this->exchange(std::move(newGraph)); !result) {
-                        this->emitErrorMessage("propertyCallbackGraphGRC", "Failed to exchange graph");
-                        return {};
+                        auto msg = std::format("Failed to exchange graph: {}", result.error());
+                        this->emitErrorMessage("propertyCallbackGraphGRC", msg);
+                        message.data = std::unexpected(Error{msg});
+                        return message;
                     }
 
                     message.data = property_map{{"originalSchedulerState", static_cast<int>(originalState)}};
@@ -1384,6 +1487,9 @@ struct Simple : SchedulerBase<Simple<execution, TProfiler>, execution, TProfiler
             }
         }
     }
+
+    // repopulate _executionOrder when restarting the graph because our graph contents may have changed while stopped
+    void customReset() { customInit(); }
 };
 
 namespace detail {
@@ -1481,6 +1587,9 @@ detecting cycles and blocks which can be reached from several source blocks.)"">
         this->_adoptionBlocks.resize(n_batches);
         *this->_executionOrder = detail::batchBlocks(blockList, n_batches);
     }
+
+    // repopulate _executionOrder when restarting the graph because our graph contents may have changed while stopped
+    void customReset() { customInit(); }
 };
 
 template<ExecutionPolicy execution = ExecutionPolicy::singleThreaded, profiling::ProfilerLike TProfiler = profiling::null::Profiler>
@@ -1544,6 +1653,9 @@ struct DepthFirst : SchedulerBase<DepthFirst<execution, TProfiler>, execution, T
         this->_adoptionBlocks.resize(n_batches);
         *this->_executionOrder = detail::batchBlocks(blockList, n_batches);
     }
+
+    // repopulate _executionOrder when restarting the graph because our graph contents may have changed while stopped
+    void customReset() { customInit(); }
 };
 
 } // namespace gr::scheduler
