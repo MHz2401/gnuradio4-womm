@@ -61,3 +61,7 @@ node_modules/
 package.json
 package-lock.json
 .nvmrc
+
+# womm local build workspace (see DRIFT.md)
+.womm-prefix/
+data/
