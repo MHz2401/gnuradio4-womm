@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright © 2022–2025 GSI Helmholtzzentrum fuer Schwerionenforschung GmbH
+#                       Matthias Kretz <m.kretz@gsi.de>
+
+name: Clang CI
+
+on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - '**.h'
+      - '**.cpp'
+      - '**.cc'
+      - '**.sh'
+      - '**Makefile'
+      - '**CMakeLists.txt'
+      - '.github/workflows/Clang.yml'
+  pull_request:
+
+env:
+  CXX: clang++
+
+jobs:
+  clang:
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [16, 17, 20]
+
+    runs-on: ubuntu-latest
+
+    container:
+      image: ghcr.io/mattkretz/cplusplus-ci/clang${{ matrix.version}}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: vir-simd
+
+      - name: Cache test data
+        id: cache-testdata
+        uses: actions/cache@v4
+        with:
+          path: vc-testdata
+          key: testdata-1
+          enableCrossOsArchive: true
+
+      - name: Download test data
+        if: steps.cache-testdata.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: VcDevel/vc-testdata
+          path: vc-testdata
+
+      - name: Run test suite
+        run: cd vir-simd && make check DRIVEROPTS=-vvf
+
+  clang-libcxx:
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [14, 15, 17, 20]
+
+    runs-on: ubuntu-latest
+
+    container:
+      image: ghcr.io/mattkretz/cplusplus-ci/clang${{ matrix.version}}
+
+    env:
+      CXXFLAGS: -stdlib=libc++
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: vir-simd
+
+      - name: Cache test data
+        id: cache-testdata
+        uses: actions/cache@v4
+        with:
+          path: vc-testdata
+          key: testdata-1
+          enableCrossOsArchive: true
+
+      - name: Download test data
+        if: steps.cache-testdata.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: VcDevel/vc-testdata
+          path: vc-testdata
+
+      - name: CMake test
+        run: |
+          cmake -S vir-simd -B cmake-build -DCMAKE_BUILD_TYPE:STRING=Release
+          cmake --build cmake-build --target check
+
+      - name: Run test suite
+        run: cd vir-simd && make check DRIVEROPTS=-vvf

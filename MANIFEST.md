@@ -90,19 +90,45 @@ Compiled here from fetched, checksummed source. **No binaries are downloaded.** 
 own compiler is what makes the ABI match by construction — it is the mechanism that avoids the
 libstdc++/libc++ mismatch, not an accident of it.
 
-| Artifact | Upstream | Proposed ref | Why needed |
+**FETCHED — actual pins below. Both are master commits, not release tags.** Investigating the
+tags first (owner's "pessimism saves time") changed both choices:
+
+| Artifact | Pinned SHA | Rejected | Why the tag was wrong |
 |---|---|---|---|
-| **SoapySDR** | `github.com/pothosware/SoapySDR` | `0.8.1` — matches the ABI the gr4 wrapper checks and the version previously installed here | gr4's **only** radio path |
-| **SoapyUHD** | `github.com/pothosware/SoapyUHD` | latest compatible with UHD 4.10.0.0 — **to confirm** | the only route to the three attached B210s |
+| **SoapySDR** | `1551ea0d39ce546b32a15808b9b1241018a89fc8` (2026-01-02) | `soapy-sdr-0.8.1` (2021-07-25, 109 commits behind) | 0.8.1 lacks `ea8b3c1 Fix macOS rpath installation` and `101d1f4 os-x-clang-fix`, plus newer-CMake compat |
+| **SoapyUHD** | `2a5d381f68fd05d5b3c0e7db56c36892ea99b4ae` (2025-10-05) | `soapy-uhd-0.4.1` (2020-09-20, 20 commits behind) | **0.4.1 predates UHD 4.8 and would not build against our UHD 4.10.** master adds `post_input_action`/`post_output_action` for UHD 4.8+ (`ryanvolz`, PR #61), newer-CMake compat, and the C++14 the UHD headers require |
 
-**Patch risk, stated honestly: I cannot rule out needing to patch SoapySDR.** 0.8.1 is 2021-vintage
-against a macOS 26 SDK and clang 21. The exposure is bounded — SoapySDR builds as its own project
-with its own flags, so gr4's `-Werror` does not reach it — but if a patch is needed it gets
-reported before it is applied, not fixed quietly.
+Verified post-fetch: `post_input_action`/`post_output_action` present in
+`vendor/SoapyUHD/UHDSoapyDevice.cpp:711,863`; CMake floors are now range syntax
+(`2.8.12...3.10`, `3.3...3.10`), so the antique-CMake problem is gone from both.
 
-I will report the exact resolved tag, commit SHA and archive checksum for each **before** building.
+**ABI consequence, accepted deliberately.** master moves `SOAPY_SDR_ABI_VERSION` from `"0.8"` to
+`"0.8-3"` (`vendor/SoapySDR/include/SoapySDR/Version.h`). Harmless while we build SoapySDR *and*
+every module ourselves — they are self-consistent. It would bite only if a **prebuilt third-party
+module** compiled against `"0.8"` were mixed in; such a module will refuse to load. Relevant later
+if HackRF is approached via a packaged SoapyHackRF rather than a source build.
 
-### 4c. libsoundio — VENDORED, not fetched (revised per owner direction)
+**On "unreleased master" as a risk:** in a copy-and-carry model we pin an exact SHA either way, so
+tag-vs-branch is not the safety property — the pinned, checksummed, locally-carried tree is.
+
+**Patch risk remains open.** Both are being compiled against a macOS 26 SDK and clang 21 for the
+first time. Exposure is bounded — each builds as its own project with its own flags, so gr4's
+`-Werror` does not reach them — and any patch gets reported before it is applied, not fixed quietly.
+
+### 4c. libsoundio — VENDORED at master, NOT at any release tag
+
+**FETCHED. Pinned to `49a1f78b50eb0f5a49d096786a95a93874a2592a`** (master, 2023-07-05) —
+*"Updating support for coreaudio to macos 12. kAudioObjectPropertyElementMaster ->
+kAudioObjectPropertyElementMain"*. Verified: 31 occurrences of `kAudioObjectPropertyElementMain`
+in `vendor/libsoundio/src/coreaudio.c`. LICENSE is MIT (Expat), © 2015 Andrew Kelley, intact.
+
+**The newest-looking tags are a trap and were rejected.** `2.0.1-5/6/7` (April 2024) postdate
+master but live on the **`zig-pkg` branch** — 25 commits of Zig build-system packaging. Confirmed
+with `git merge-base --is-ancestor`: **`2.0.1-7` does NOT contain master's CoreAudio fix.** Picking
+by version number would have silently produced a build broken on modern macOS. `macos9` (2015) and
+`v2` (2016) are both dead ends.
+
+Selecting an untagged commit costs nothing here: we pin the SHA ourselves.
 
 **Changed from §4b at the owner's direction.** libsoundio is *not* to be pulled from an upstream
 URL at build time. Instead: take one well-marked MIT-licensed snapshot, vendor it, and

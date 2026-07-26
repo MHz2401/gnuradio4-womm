@@ -1,0 +1,81 @@
+# This CITATION.cff file was initially generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+#
+# SPDX-FileCopyrightText: 2024–2025 GSI Helmholtzzentrum fuer Schwerionenforschung GmbH
+# SPDX-License-Identifier: CC0-1.0
+
+cff-version: 1.2.0
+title: vir-simd
+message: >-
+  If you use this software, please cite it using the metadata from
+  this file. Consider additional citation of the works under
+  references.
+type: software
+authors:
+  - given-names: Matthias
+    family-names: Kretz
+    email: m.kretz@gsi.de
+    affiliation: GSI Helmholtz Centre for Heavy Ion Research
+    orcid: 'https://orcid.org/0000-0002-0867-243X'
+doi: 10.5281/zenodo.15380078
+version: 0.4.4
+date-released: 2025-05-10
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.15380078
+    description: Version 0.4.4
+  - type: doi
+    value: 10.5281/zenodo.15340451
+    description: Version 0.4.2
+  - type: doi
+    value: 10.5281/zenodo.13842247
+    description: Version 0.4.0
+  - type: doi
+    value: 10.5281/zenodo.13757391
+    description: Version 0.3.200
+  - type: doi
+    value: 10.5281/zenodo.10068785
+    description: Version 0.3.1
+  - type: doi
+    value: 10.5281/zenodo.10055164
+    description: Version 0.3.0
+  - type: doi
+    value: 10.5281/zenodo.7892320
+    description: Version 0.2.0
+  - type: doi
+    value: 10.5281/zenodo.7789154
+    description: Version 0.1.0
+repository-code: 'https://github.com/mattkretz/vir-simd'
+keywords:
+  - C++
+  - SIMD
+  - library
+license: LGPL-3.0-or-later
+references:
+  - scope: >-
+      Cite this paper if you want a reference to the general concepts
+      introduced by std::experimental::simd.
+    title: "Vc: A C++ library for explicit vectorization"
+    type: article
+    doi: 10.1002/spe.1149
+    issn: 1097-024X
+    journal: "Software: Practice and Experience"
+    publisher: "John Wiley & Sons, Ltd"
+    year: 2011
+    authors:
+      - given-names: Matthias
+        family-names: Kretz
+        orcid: 'https://orcid.org/0000-0002-0867-243X'
+      - given-names: Volker
+        family-names: Lindenstruth
+  - scope: >-
+      Cite this thesis if you want more context on the development and design
+      behind std::experimental::simd.
+    title: "Extending C++ for Explicit Data-Parallel Programming via SIMD Vector Types"
+    type: thesis
+    doi: 10.13140/RG.2.1.2355.4323
+    year: 2015
+    authors:
+      - given-names: Matthias
+        family-names: Kretz
+        orcid: 'https://orcid.org/0000-0002-0867-243X'
