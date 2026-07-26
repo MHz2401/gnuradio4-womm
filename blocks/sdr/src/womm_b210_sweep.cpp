@@ -31,7 +31,7 @@
 using T = std::complex<float>; // what the radio actually delivers
 
 inline std::size_t          kDepth        = 8UZ;   // argv[2] overrides; 0 = source straight to sink    // multiply/divide pairs, matches womm_bm_scaling
-inline constexpr double      kDurationSec  = 2.0;    // per rate point
+inline constexpr double      kDurationSec  = 8.0;    // per rate point
 inline constexpr double      kCentreFreqHz = 100e6;  // FM band, benign and always populated
 inline constexpr double      kRxGainDb     = 30.0;
 inline constexpr double      kB210MaxRate  = 61.44e6;
@@ -85,6 +85,7 @@ Point runAtRate(double rateHz) {
         srcCfg["sample_rate"]        = static_cast<float>(rateHz);
         srcCfg["frequency"]          = std::vector{kCentreFreqHz};
         srcCfg["rx_gains"]           = std::vector{kRxGainDb};
+        srcCfg["max_time_out_us"]    = std::uint32_t{1000000}; // 1 s, vs 1 ms default
     }
     auto& src = graph.emplaceBlock<SoapySource<T, 1UZ>>(srcCfg);
 
@@ -122,7 +123,19 @@ Point runAtRate(double rateHz) {
     const auto        t0 = std::chrono::steady_clock::now();
     std::thread       runner([&] { ok.store(sched.runAndWait().has_value(), std::memory_order_relaxed); });
 
+    // Device init (B210: ~2.5 s of FPGA/codec/clock bring-up) must NOT count toward
+    // the streaming interval, or the achieved rate is diluted by setup - the same
+    // error that invalidated the first scaling curve. Time from the first sample.
+    std::chrono::steady_clock::time_point tFirst{};
+    while (sinkPtr->count == 0U && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    tFirst = std::chrono::steady_clock::now();
+    const gr::Size_t countAtFirst = sinkPtr->count;
+
     std::this_thread::sleep_for(std::chrono::duration<double>(kDurationSec));
+    const gr::Size_t countAtStop = sinkPtr->count;
+    const double     streamSec   = std::chrono::duration<double>(std::chrono::steady_clock::now() - tFirst).count();
     sched.requestStop();
 
     // hard backstop: never let a wedged graph hold the machine
@@ -139,7 +152,7 @@ Point runAtRate(double rateHz) {
     const auto t1 = std::chrono::steady_clock::now();
 
     const double elapsed  = std::chrono::duration<double>(t1 - t0).count();
-    const double achieved = static_cast<double>(sinkPtr->count) / elapsed;
+    const double achieved = streamSec > 0.0 ? static_cast<double>(countAtStop - countAtFirst) / streamSec : 0.0;
     return {rateHz, elapsed, achieved, ok.load(std::memory_order_relaxed)};
 }
 

@@ -463,3 +463,62 @@ Worth noting how this went unseen: every Soapy file is excluded from all upstrea
 `qa_SoapySource`'s only device case hardcodes an absent RTL-SDR, `qa_SoapyIntegration` self-skips
 without a LimeSDR, and `qa_SoapyLoopback` exercises the raw device rather than the block. The
 block-level path appears never to have been run to completion by anyone.
+
+---
+
+## ✅ Phase 5 — END-TO-END WORKS. B210 → DSP → sink, rate swept.
+
+**RETRACTION FIRST.** The previous section reported that `SoapySource` yields zero samples and
+raised the possibility that the block had never worked against hardware. **That was wrong, and the
+fault was mine.** `kDurationSec` was 2.0 s while a B210 needs ~2.5 s of bring-up (device
+detection, FPGA load, codec init, clock negotiation). `requestStop()` therefore fired *before the
+reader thread was ever scheduled*. Instrumenting `ioReadLoop` showed it plainly:
+
+```
+2 s run:   ioReadLoop top: state=STOPPED  isActive=false   <- loop body never executes
+12 s run:  ioReadLoop top: state=RUNNING  isActive=true
+           read#0    ret=8192  totalRead=8192
+           reserve#0 want=8192 got=8192 empty=false
+```
+
+**There is no gnuradio4 defect here.** `SoapySource` works correctly against a B210. All
+instrumentation has been reverted; `SoapySource.hpp` is byte-identical to upstream.
+
+Two corollaries worth keeping:
+- The `LoopbackDevice` was never a valid control. It is a *loopback* — with no `SoapySink`
+  writing into it there is nothing to read, so its zeros were correct behaviour, not a symptom.
+  Reasoning "it fails on loopback too, therefore device-agnostic" was wrong.
+- `SoapyRaiiWrapper.hpp:769-771` returns `SOAPY_SDR_TIMEOUT` when the device or stream is null,
+  making a configuration failure indistinguishable from an ordinary timeout. Not our bug, and not
+  what bit us, but it is a genuine diagnosability wart worth remembering.
+
+### The result — B210, complex<float>, 8 multiply/divide stages, 8 s per point
+
+Measured over the **streaming interval only**; device init is excluded, because including it was
+exactly the setup-contamination error that invalidated the first scaling curve.
+
+| requested | ×B210 max | achieved Msps | ratio | verdict |
+|---|---|---|---|---|
+| 1.00 | 0.02× | 1.00 | 0.999 | **KEEPS UP** |
+| 4.00 | 0.07× | 4.00 | 1.000 | **KEEPS UP** |
+| 8.00 | 0.13× | 8.00 | 1.000 | **KEEPS UP** |
+| 16.00 | 0.26× | 15.93 | 0.996 | **KEEPS UP** |
+| 32.00 | 0.52× | 24.76 | 0.774 | behind |
+| 56.00 | 0.91× | 26.68 | 0.476 | behind, UHD printed `O` (overflow) |
+
+**gnuradio4 on this machine sustains a B210 at 16 MS/s complex, lossless, through an 8-stage DSP
+chain.** The path saturates at roughly **25–27 MS/s**, where UHD reports genuine overflows.
+
+### Where the ceiling is not
+
+16 MS/s complex is ~32 M floats/s. The synthetic steady-state measurement puts single-chain DSP
+throughput at **168 Msps** — five times the load at which the radio path saturates. So the
+25–27 MS/s ceiling is **not** the DSP layer, and not the scheduler plateau discussed earlier. It
+is in the device/transport path: USB 3 bulk transfer, the UHD receive path, or `ioReadLoop`'s
+fixed 8192-sample reads. That is where Phase 4 effort should go if higher rates are wanted.
+
+Harness: `blocks/sdr/src/womm_b210_sweep.cpp`. Reproduce:
+```
+source scripts/env.sh
+./build-fixed/blocks/sdr/src/womm_b210_sweep
+```

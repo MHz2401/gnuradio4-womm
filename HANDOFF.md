@@ -107,7 +107,14 @@ capability is comfortable. Harness: `core/benchmarks/womm_bm_scaling.cpp`.
 
 ## 4. OPEN — the live problem
 
-### 4.1 THE BUG: `SoapySource` delivers zero samples
+### 4.1 ~~THE BUG~~ — RESOLVED, was my harness. See RESULTS.md Phase 5.
+
+**Not a gnuradio4 defect.** `kDurationSec=2.0` was shorter than the B210's ~2.5 s bring-up, so
+`requestStop()` fired before the reader thread was scheduled. End-to-end now works: B210 sustains
+**16 MS/s complex lossless**, saturating at ~25-27 MS/s. Original text kept below for the
+ruled-out list, which remains useful.
+
+#### (historical) `SoapySource` delivers zero samples
 
 The block yields **0 samples** from a real B210 *and* from the synthetic `LoopbackDevice`. A
 `ConstantSource` through the identical harness does 573 Msps, so the measurement is sound.
