@@ -572,3 +572,86 @@ currently meet that**, and no amount of re-running fixes it — the variance is 
 3. Only then attempt the 5-run stability gate.
 
 Reported rather than worked around. No test has been disabled, retried, or excluded.
+
+---
+
+## ★ ROOT CAUSE — the macOS thread-pool polling loop burns ~13 cores doing nothing
+
+This is the most consequential finding of the project. It was reached by chasing
+`qa_BasicFileIo`'s run-to-run variance.
+
+### The measurement
+
+`qa_BasicFileIo` — a **file I/O test that never uses the thread pool**, run standalone:
+
+| Metric | Value |
+|---|---|
+| wall | 5.46 s |
+| user | 2.71 s |
+| **system** | **71.54 s** |
+| involuntary context switches | **2,974,438** (545 k/s) |
+| voluntary context switches | **0** |
+
+71 s of kernel time inside a 5.5 s run means roughly **13 cores permanently in the kernel**.
+
+### The mechanism
+
+`thread_pool.hpp:635-657`, macOS-only, added to work around a libc++ defect. Upstream's own
+comment:
+
+> *macOS + Homebrew libc++ workaround: `condition_variable::wait_for()` with per-thread mutexes
+> triggers EINVAL (POSIX requires the same mutex for all concurrent waiters on the same condvar,
+> and macOS enforces this unlike Linux). Use a short-sleep polling loop with 10 μs granularity
+> instead.*
+
+Every other platform blocks on a condition variable. macOS spins on `sleep_for(10 µs)`. The pool
+eagerly creates `hardware_concurrency()` = **24** workers at singleton construction
+(`thread_pool.hpp:805-823`), so **every gnuradio4 process on this machine** runs 24 threads each
+issuing ~100,000 `nanosleep` syscalls per second — ~2.4 M/s — whether or not any work exists.
+
+`sample` on a hung run: **1345 of 1349 samples** in `BasicThreadPool::worker → sleep_for →
+nanosleep`, at **1411 % CPU**.
+
+### Causal confirmation
+
+Changing the one constant 10 µs → 2 ms (experiment only, since reverted):
+
+| | 10 µs | 2 ms | change |
+|---|---|---|---|
+| user | 2.71 s | 1.30 s | −52 % |
+| **system** | **71.54 s** | **1.85 s** | **−97.4 %** |
+| involuntary ctx sw | 2,974,438 | 95,852 | −96.8 % |
+| wall | 5.46 s | 9.30 s | **+70 % worse** |
+
+**The polling loop causes 97.4 % of all system time.** But a longer sleep is *not* the fix — it
+trades syscall storm for task-pickup latency and makes wall time substantially worse. The correct
+fix is to restore blocking: give all waiters on the condvar a **shared** mutex, which is what
+POSIX requires anyway and what the EINVAL is complaining about. That is an upstream-shaped change
+to `BasicThreadPool`, not a constant tweak.
+
+### What this explains
+
+- **The owner's "system rather than user CPU" observation** — confirmed instrumentally, and it is
+  far more extreme than it looked.
+- **The ~3 M involuntary context switches** seen in the scaling benchmark.
+- **Why `qa_BasicFileIo` hangs ~33 % of the time when run alone but passes under `-j8`**: idle
+  pool workers get more CPU when nothing else competes, so the syscall storm is *worse* when the
+  machine is otherwise idle. A test that fails when idle and passes under load.
+- **Plausibly the original §0 anomaly.** A MacBook Air runs 8 polling threads; an M2 Ultra runs 24.
+  Both waste proportionally, and useful work is throttled by the syscall storm either way — which
+  is exactly the "something constant across both machines sets the ceiling" shape the brief
+  described. **Not proven** — the anomaly was measured on GNU Radio 3.x, a different codebase —
+  but it is the first mechanism found that has the right shape.
+
+### Status
+
+Experiment reverted; `thread_pool.hpp` is byte-identical to upstream. The real fix (shared-mutex
+condvar) is **not** attempted here — it is a genuine design change and deserves its own session
+with the thread-pool tests in front of it.
+
+### Secondary, still open
+
+The main thread in a hung run is stuck in
+`poolWorker → BlockWrapper<BasicFileSink<double>>::work → workInternal` under a **singleThreaded**
+scheduler. Whether that is an independent defect or a downstream consequence of CPU starvation
+from the polling storm is not yet determined.

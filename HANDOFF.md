@@ -158,13 +158,42 @@ Why this was never caught upstream: every Soapy file is excluded from all CI
 `qa_SoapySource` needs an absent RTL-SDR; `qa_SoapyIntegration` self-skips; `qa_SoapyLoopback`
 tests the raw device, not the block. The block-level path appears never to have run to completion.
 
-### 4.2 Second open item: graph lifecycle leaks memory
+### 4.2 ★ ROOT CAUSE FOUND — macOS thread-pool polling burns ~13 cores
+
+**The headline result. Read RESULTS.md "ROOT CAUSE" before anything else.**
+
+`thread_pool.hpp:635-657` is a macOS-only `sleep_for(10us)` polling loop, added to work around a
+libc++ `condition_variable::wait_for` EINVAL. Every other platform blocks on a condvar. The pool
+eagerly spawns `hardware_concurrency()` = 24 workers, so **every gr4 process on this machine**
+issues ~2.4 M `nanosleep` syscalls/s whether or not work exists.
+
+Measured on `qa_BasicFileIo` — a file test that never uses the pool:
+**5.46 s wall, 2.71 s user, 71.54 s system, 2.97 M involuntary context switches.**
+~13 cores permanently in the kernel.
+
+Causally confirmed: 10 us -> 2 ms cut system time **97.4 %** (71.54 s -> 1.85 s) but made wall
+time **70 % worse**. So a bigger constant is NOT the fix.
+
+**THE FIX (next session's main event):** give all waiters on the condvar a **shared mutex** —
+which is what POSIX requires and what the EINVAL is actually complaining about — restoring
+blocking waits on macOS. Upstream-shaped change to `BasicThreadPool`. Not attempted yet; it is a
+real design change and deserves a session with the thread-pool tests in front of it.
+
+Explains: the owner's system-vs-user observation, the 3 M context switches in the scaling
+benchmark, and why `qa_BasicFileIo` hangs ~33 % of the time **when run alone** but passes under
+`-j8` (idle workers get more CPU when nothing competes). Possibly the original §0 anomaly — a
+MacBook Air polls with 8 threads, an Ultra with 24; both throttle on the syscall storm. Not
+proven, since §0 was measured on GNU Radio 3.x.
+
+Experiment reverted; `thread_pool.hpp` is byte-identical to upstream.
+
+### 4.3 Graph lifecycle leaks memory
 
 Seven graph builds → **8 GiB peak RSS** and **1.7 M page reclaims** against ~64 MB of live sample
 data. Buffers are not released between graph lifecycles. Fixed cost per build, not per sample.
 This dominates any build-run-teardown cycle. Not yet diagnosed.
 
-### 4.3 Deferred, in priority order
+### 4.4 Deferred, in priority order
 
 1. Parallel scaling: 2.07× from 16 chains. Suspects, untested: strided block→thread partitioning
    (`Scheduler.hpp:1378-1385`), absent Darwin QoS (`thread_affinity.hpp`, 15 no-op sites),
@@ -236,8 +265,8 @@ USB/UHD/`ioReadLoop`.
   identical code. The 5-clean-run stability gate is currently unmeetable.
 
 ### 7.3 Next-step ordering
-1. **Diagnose `qa_BasicFileIo`'s 34× variance.** Blocks the stability gate and may share a root
-   cause with the parallel-scaling plateau (thread starvation; no Darwin QoS).
+1. **DONE — root cause found, see §4.2.** Remaining: implement the shared-mutex condvar fix and
+   re-measure everything (scaling curve, B210 sweep, stability runs) against it.
 2. **Serialise device tests** — ctest `RESOURCE_LOCK` or a fixture; upstream-shaped, no patch.
 3. **Push the radio ceiling** if higher rates are wanted: USB/UHD/`ioReadLoop` (fixed 8192-sample
    reads), *not* the DSP layer.
