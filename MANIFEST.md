@@ -60,27 +60,47 @@ holds 231 formulas, `brew install` can upgrade transitive dependencies, and you 
 deliberately removed a tap-sourced stack for provenance reasons. Every artifact below gets a
 recorded URL, ref and checksum instead of inheriting a tap's provenance.
 
-### 4a. Supplied by CMake's own pins — set `GR_USE_FETCHCONTENT_DEPS=ON`
+### 4a. Copy-and-carry — vendored header-only sources (revised per owner direction)
 
-No version choice by me; these are the project's pins from §2. They land in the build tree, not on
-the system.
+**`GR_USE_FETCHCONTENT_DEPS` stays `OFF`. There is no FetchContent in this build at all.**
 
-| Artifact | Ref | Verification |
-|---|---|---|
-| Boost.UT | `53e17f2…` (full SHA) | git object hash is self-verifying |
-| vir-simd | `v0.4.4` | record resolved commit SHA at fetch; re-check on every rebuild |
-| cpr | `1.14.1` | record resolved commit SHA at fetch |
+Owner's reasoning, adopted: (A) a pinned SHA guarantees *integrity*, not *availability* — immutable
+things still disappear; (B) processor changes may require source changes; (C) the code may need to
+change *now*. Point (C) is load-bearing here: the project compiles `-Werror`, and Apple clang 21 is
+newer than the clang 20 upstream CI tests, so a third-party header emitting a new diagnostic is a
+hard build stop. Vendored sources are patchable in-tree with a `DRIFT.md` line; fetched sources
+would have to be patched at configure time — the `|| true` hack upstream already resorts to for cpr
+(`CMakeLists.txt:633`).
+
+All three are header-only, verified from what CMake looks for:
+
+| Artifact | Upstream | Ref | CMake discovery | Size |
+|---|---|---|---|---|
+| **Boost.UT** | `github.com/boost-ext/ut` | `53e17f25119598c6458d30351b260193096ba67e` (full SHA, from the tree) | `find_path(… boost/ut.hpp)` `:509` | single header |
+| **vir-simd** | `github.com/mattkretz/vir-simd` | `v0.4.4` (from the tree) | `find_path(… vir/simd.h)` `:517` | headers only |
+| **cpp-httplib** | `github.com/yhirose/cpp-httplib` | `v0.18.1` (matching the tree's Emscripten pin) | `find_package(httplib CONFIG)` `:532` → pkg-config | single header |
+
+Vendored under `third_party/`, each with its upstream `LICENSE` unmodified, following the existing
+`magic_enum` pattern (`CMakeLists.txt:450-463`). Resolved commit SHA and checksum recorded in
+`BUILD_JOURNAL.md`. If none is multi-megabyte the whole set is a handful of files.
 
 ### 4b. Built from source into the isolated prefix — **versions are my proposal, to confirm**
 
+Compiled here from fetched, checksummed source. **No binaries are downloaded.** Building with our
+own compiler is what makes the ABI match by construction — it is the mechanism that avoids the
+libstdc++/libc++ mismatch, not an accident of it.
+
 | Artifact | Upstream | Proposed ref | Why needed |
 |---|---|---|---|
-| **cpp-httplib** | `github.com/yhirose/cpp-httplib` | `v0.18.1` — *matching the tree's own Emscripten pin* | required, no native fetch path (§2 item 3) |
 | **SoapySDR** | `github.com/pothosware/SoapySDR` | `0.8.1` — matches the ABI the gr4 wrapper checks and the version previously installed here | gr4's **only** radio path |
 | **SoapyUHD** | `github.com/pothosware/SoapyUHD` | latest compatible with UHD 4.10.0.0 — **to confirm** | the only route to the three attached B210s |
 
-I will report the exact resolved tag, commit SHA and archive checksum for each **before** building,
-and record them in `BUILD_JOURNAL.md`.
+**Patch risk, stated honestly: I cannot rule out needing to patch SoapySDR.** 0.8.1 is 2021-vintage
+against a macOS 26 SDK and clang 21. The exposure is bounded — SoapySDR builds as its own project
+with its own flags, so gr4's `-Werror` does not reach it — but if a patch is needed it gets
+reported before it is applied, not fixed quietly.
+
+I will report the exact resolved tag, commit SHA and archive checksum for each **before** building.
 
 ### 4c. libsoundio — VENDORED, not fetched (revised per owner direction)
 
@@ -115,7 +135,28 @@ libsoundio entirely would remove the dependency. Noted as a direction, not sched
 **Approval still needed** for the one-time fetch of that snapshot — it is a network fetch like any
 other, and its resolved commit SHA, checksum and `LICENSE` text will be recorded before use.
 
-### 4c. Struck from the manifest
+### 4d. cpr and `GR_ENABLE_HTTP` — OPEN DECISION, needs your call
+
+Not previously raised. `GR_ENABLE_HTTP` defaults to **`"ON"`** (`CMakeLists.txt:222`), which
+requires **libcurl** (satisfied by the macOS SDK, 8.7.1) **and cpr** (absent). Two ways forward:
+
+| Option | Effect | Cost |
+|---|---|---|
+| **(a) Build cpr `1.14.1` from source into the prefix** *(default)* | HTTP blocks build and are tested; nothing excluded | one more dependency; cpr is a real library, not header-only |
+| **(b) Set `GR_ENABLE_HTTP=OFF`** | drops cpr *and* libcurl; `blocks/http` is excluded | **excludes a module from the build — needs your explicit approval per the project rules.** Coverage loss is modest: `qa_HttpBlock` is already not built on macOS (`blocks/http/test/CMakeLists.txt:1`) |
+
+I am **not** proposing the third path, `GR_ENABLE_HTTP=OPTIONAL`: with libcurl found but cpr
+missing it disables HTTP with no diagnostic (`:643-650`) — a silent fallback, which is precisely
+what the brief forbids.
+
+**Note:** cpp-httplib is required **regardless** of `GR_ENABLE_HTTP` — its `FATAL_ERROR` at `:536`
+and `:546` sits outside the HTTP block entirely. So option (b) does not remove it; it stays in §4a.
+
+Default is **(a)** unless you say otherwise — it keeps the "no exclusions" rule intact, and for an
+SDR performance project the HTTP blocks are irrelevant either way, so the honest tiebreak is
+"don't disable things to make the build easier."
+
+### 4e. Struck from the manifest
 
 - **UHD FPGA/firmware images** — no longer needed. `/opt/homebrew/share/uhd/images/` holds 32
   files including `usrp_b200_fpga.bin` and `usrp_b200_fw.hex`; three B210s enumerate.
@@ -124,7 +165,7 @@ other, and its resolved commit SHA, checksum and `LICENSE` text will be recorded
 - **brew `llvm@20`** — held in reserve. Apple clang 21 is tried first at zero cost; this becomes a
   manifest item only if that fails.
 
-### 4e. Separate approvals — decided
+### 4f. Separate approvals — decided
 
 - **`upstream` remote** (`github.com/gnuradio/gnuradio4`, fetch-only, never push) — **APPROVED**,
   subject to the snapshot-first policy in §8.
@@ -132,7 +173,7 @@ other, and its resolved commit SHA, checksum and `LICENSE` text will be recorded
   session no longer listing `codpcl_LCS` as the project working directory. Not needed until
   Ethernet Octoclock-G work begins, which is currently out of scope.
 
-### 4f. Emscripten — assessed, no action
+### 4g. Emscripten — assessed, no action
 
 `EMSCRIPTEN` is **not an option and cannot be "pulled in" or "cut out."** Verified: no
 `option()` for it exists anywhere; CMake sets the variable only when the Emscripten toolchain file
