@@ -1441,6 +1441,9 @@ struct Simple : SchedulerBase<Simple<execution, TProfiler>, execution, TProfiler
             }
         }
     }
+
+    // repopulate _executionOrder when restarting the graph because our graph contents may have changed while stopped
+    void customReset() { customInit(); }
 };
 
 namespace detail {
@@ -1538,6 +1541,9 @@ detecting cycles and blocks which can be reached from several source blocks.)"">
         this->_adoptionBlocks.resize(n_batches);
         *this->_executionOrder = detail::batchBlocks(blockList, n_batches);
     }
+
+    // repopulate _executionOrder when restarting the graph because our graph contents may have changed while stopped
+    void customReset() { customInit(); }
 };
 
 template<ExecutionPolicy execution = ExecutionPolicy::singleThreaded, profiling::ProfilerLike TProfiler = profiling::null::Profiler>
@@ -1601,6 +1607,9 @@ struct DepthFirst : SchedulerBase<DepthFirst<execution, TProfiler>, execution, T
         this->_adoptionBlocks.resize(n_batches);
         *this->_executionOrder = detail::batchBlocks(blockList, n_batches);
     }
+
+    // repopulate _executionOrder when restarting the graph because our graph contents may have changed while stopped
+    void customReset() { customInit(); }
 };
 
 } // namespace gr::scheduler
