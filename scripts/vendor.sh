@@ -83,3 +83,19 @@ done
 
 printf '\n=== lock file ===\n'
 cat "${LOCK_FILE}"
+
+# Vendored trees MUST be force-added.
+#
+# Two independent sets of ignore rules would otherwise silently drop files:
+#   1. gnuradio4's own .gitignore - "lib/" alone swallows the entire
+#      vendor/SoapySDR/lib/ core implementation, leaving an unbuildable
+#      snapshot; "Makefile", "bin/", ".vscode/" and "build*/" hit others.
+#   2. .gitignore files inside the vendored repositories themselves, which
+#      take precedence over root rules and so cannot be un-ignored from here.
+#
+# -f bypasses both. Once tracked, files are no longer subject to ignore rules.
+cat <<'NOTE'
+
+NEXT: git add -f vendor      (plain `git add vendor` silently drops ~59 files)
+      then verify with:      scripts/verify-vendor.sh
+NOTE
