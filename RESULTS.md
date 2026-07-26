@@ -183,3 +183,62 @@ cd /Users/whom/dvel/ghzhub/GR4-fork/gnuradio4-womm
 source scripts/env.sh
 ./build-baseline/core/benchmarks/womm_bm_scaling
 ```
+
+### Owner-observed telemetry during the scaling run — narrows the diagnosis
+
+Observed while `womm_bm_scaling` ran: **peak load ≈ 8 processor-equivalents** (from 16 worker
+threads), and the CPU time is predominantly **`system`, not `user`**.
+
+That single observation discriminates between the three candidate mechanisms, and it does so
+against my prior ordering:
+
+| Candidate | Predicted CPU accounting | Consistent? |
+| --- | --- | --- |
+| Mirror-`memcpy` (`CircularBuffer.hpp:352-378`) | **user** — a pure userspace copy | ✗ not what is seen |
+| macOS 10 µs `sleep_for` poll (`thread_pool.hpp:635-657`) | **system** — a `nanosleep` syscall per iteration | ✓ |
+| `std::atomic_ref::wait` → `__ulock_wait` (`Sequence.hpp:53`) | **system** — syscall | ✓ |
+| Absent Darwin QoS (`thread_affinity.hpp`, 15 sites) | poor core residency, not system time per se | partial — fits ~8-of-16 utilisation |
+
+Memory-bandwidth saturation from the mirror copy would show as user time and near-full core
+occupancy. Neither is observed. **The ablation order is therefore reversed from the original
+plan: wake/sleep path first, mirror-`memcpy` second.**
+
+~8 processor-equivalents from 16 threads also means roughly half the workers are not doing useful
+work, which is consistent with both the polling loop and the missing QoS hints.
+
+*This is an owner observation from system telemetry, not an instrumented measurement by me. It
+should be confirmed with a proper syscall/time-split profile before Phase 4 acts on it.*
+
+---
+
+## Teardown defect — `SoapySDRUtil` segfaults at exit (NOT gnuradio4)
+
+`SoapySDRUtil --probe="driver=uhd"` completes all I/O correctly — full capability tree, sensors,
+`temp 42.8 C`, `lo_locked true` — then **segfaults during `exit()`**.
+
+Backtrace (lldb):
+
+```
+exit → __cxa_finalize_ranges
+     → libuhd.4.10.0.dylib`log_resource::~log_resource()
+     → __tree<…, std::function<void(uhd::log::logging_info const&)>>::destroy
+     → __destroy_at → blr x8      EXC_BAD_ACCESS
+```
+
+**Root cause: static-destructor ordering across a `dlclose`d module boundary.** UHD's
+`log_resource` singleton holds a map of log handlers whose values are `std::function`s. SoapySDR
+unloads driver modules with `dlclose` (`vendor/SoapySDR/lib/Modules.in.cpp:300`, opened
+`RTLD_LAZY | RTLD_LOCAL` at `:259`). Once `libuhdSupport.so` is unmapped, destroying those
+`std::function`s calls into code that no longer exists.
+
+**Not ours, and not gnuradio4's.** Every frame is `libuhd`, `libsystem_c` or `dyld`. It is not
+caused by either of our two SoapyUHD patches, both of which are compile-time only.
+
+**gnuradio4 is unaffected — verified.** `qa_SoapyIntegration`, `qa_SoapyLoopback` and
+`qa_SoapyRaiiWrapper` all pass and exit cleanly with the same module loaded
+(`qa_SoapyIntegration`, 37.5 s, repeated). gr4 never unloads the module, so it stays mapped and
+the destructors find their code. The defect is reachable only via the utility's unload path.
+
+Consequence: `SoapySDRUtil --probe` is safe to use for hardware verification — all output before
+the crash is valid — but its exit status cannot be trusted. Recorded as an upstream defect;
+not patched, since it does not affect the build under test.
