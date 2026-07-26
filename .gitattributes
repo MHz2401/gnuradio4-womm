@@ -1,0 +1,7 @@
+# Vendored third-party sources are byte-exact upstream snapshots.
+#
+# Without this, core.autocrlf=input strips CR from files git detects as text,
+# so a fresh checkout would not reproduce the bytes recorded in
+# vendor/MANIFEST.lock and the tree_sha256 verification would fail.
+# -text disables all end-of-line conversion for vendored content.
+vendor/** -text
