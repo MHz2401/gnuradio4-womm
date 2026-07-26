@@ -338,3 +338,50 @@ A benchmark must be shown to be measuring its steady state before its numbers me
 tell was available in the first run and I did not look for it: `/usr/bin/time -l` costs nothing.
 Every throughput figure in this document is now taken at 20 M samples/chain, where the marginal
 cost per sample dominates the fixed cost.
+
+---
+
+## Phase 5 attempt — end-to-end B210 sweep: BLOCKED, not completed
+
+`blocks/sdr/src/womm_b210_sweep.cpp` streams a real B210 through the same 8-stage chain and
+reports the achieved sample rate. **It does not yet work: the sink receives zero samples.**
+
+### What is ruled out
+
+| Hypothesis | Test | Result |
+|---|---|---|
+| DSP chain at fault | ran with depth 0, source wired straight to sink | still 0 samples |
+| Silent connection failure | replaced `std::ignore =` with a checked `mustConnect` | all connections succeed |
+| `complex<float>` unsupported by math blocks | `Math.hpp:27` registration | `std::complex<float>` **is** registered |
+| Device not initialising | UHD log | B210 detected, USB 3, clock rate 32 MHz set |
+| Scheduler erroring | `runAndWait()` return value | returns **success** |
+| Wrong channel/antenna | set `num_channels=1`, `rx_antennae={"RX2"}` from the probe | no change |
+
+So the graph is wired, the radio initialises, the scheduler runs and exits cleanly — and no
+samples arrive.
+
+### What is not ruled out
+
+Either my configuration of `SoapySource` is wrong in some way not yet found, **or** the block
+itself has never worked against real hardware. The second is not far-fetched: in this tree the
+raw `SoapyRaiiWrapper` path demonstrably streams (`ret = 16384, flags = [HAS_TIME]`, observed
+earlier), but the **block-level** `SoapySource` has no passing hardware test anywhere —
+`qa_SoapySource`'s only device case hardcodes an absent RTL-SDR, and `qa_SoapyIntegration`
+self-skips without a LimeSDR. Combined with every Soapy file being excluded from all upstream CI,
+the block-level path may never have been exercised end-to-end by anyone.
+
+**Stated as unresolved.** Distinguishing the two needs a run of the block against the synthetic
+`LoopbackDevice`, which is the cheapest next experiment and does not need hardware.
+
+### Two harness defects of mine, fixed along the way
+
+1. **Relying on `CountingSink::n_samples_max` to end the graph.** A radio source never finishes,
+   so the sink's DONE cannot stop it. The first version wedged at **1717 % CPU** — 17 cores
+   spinning in `waitDone` → `sleep_for` and `BasicThreadPool::worker` → `sleep_for` — and had to
+   be killed. `qa_SoapySource.cpp:335` uses an explicit watchdog for exactly this reason.
+   Replaced with `requestStop()` after a fixed duration, plus a 15 s hard backstop so a wedged
+   graph can never hold the machine again.
+2. **`std::ignore = graph.connect(...)`** discarded connection failures. Now checked.
+
+That first wedge is worth noting beyond this harness: it is precisely the "threads outlive the
+graph, machine needs a reboot" failure mode, reachable by ordinary misuse of the API.

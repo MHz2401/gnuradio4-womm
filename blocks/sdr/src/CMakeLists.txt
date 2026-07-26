@@ -36,3 +36,14 @@ if(EMSCRIPTEN)
     COMMENT "Serving RTL2832 WASM example on http://localhost:8081/"
     VERBATIM USES_TERMINAL)
 endif()
+
+# womm: end-to-end B210 rate sweep (see RESULTS.md)
+add_executable(womm_b210_sweep womm_b210_sweep.cpp)
+target_link_libraries(
+  womm_b210_sweep
+  PRIVATE gnuradio-options
+          gnuradio-core
+          gnuradio-blocklib-core
+          gr-sdr
+          gr-math
+          gr-testing)
