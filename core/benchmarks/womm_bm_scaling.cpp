@@ -37,7 +37,7 @@
 
 using T = float;
 
-inline constexpr gr::Size_t  kSamplesPerChain = 1'000'000U;
+inline constexpr gr::Size_t  kSamplesPerChain = 20'000'000U;
 inline constexpr std::size_t kDepth           = 8UZ;   // Multiply/Divide pairs per chain
 inline constexpr gr::Size_t  kBufferSize      = 65536U;
 inline constexpr std::size_t kRepeat          = 7UZ;   // odd, so the median is a real sample

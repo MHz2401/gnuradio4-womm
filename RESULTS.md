@@ -281,3 +281,60 @@ Remaining suspects, in the order the evidence now supports:
 2. Absent Darwin QoS (`thread_affinity.hpp`, 15 no-op sites) — no P-core preference
 3. Mirror-`memcpy` (`CircularBuffer.hpp:352-378`) — demoted; would burn user, not system, time
 4. Strided block→thread partitioning (`Scheduler.hpp:1378-1385`)
+
+---
+
+## ⚠ Phase 3.5c — CORRECTION. The earlier curve measured setup, not throughput
+
+**The Phase 3.5 headline above is wrong and is retracted.** It reported peak throughput of
+0.44× a single B210's rate and concluded the machine could not sustain one radio. That was an
+artefact of a benchmark dominated by graph construction, not steady-state DSP.
+
+### How it was caught
+
+`/usr/bin/time -l` on the 16-chain point:
+
+| | 1 M samples/chain | 20 M samples/chain |
+|---|---|---|
+| throughput | 25.7 Msps | **335.4 Msps** |
+| user / sys | 10.0 s / 64.0 s | 46.9 s / **61.2 s** |
+| page reclaims | 1,710,937 | **1,764,674** |
+| peak RSS | 6.6 GiB | 8.0 GiB |
+
+Twenty times the work, **the same system time and the same page-fault count**. The 63 s of system
+time is a *fixed per-setup cost*, not per-sample. At 1 M samples/chain the benchmark spent most of
+its wall time allocating and first-touching buffers, and I reported that as a runtime ceiling.
+
+### The true curve — 20 M samples/chain, one process per point
+
+| chains | threads | median (s) | spread (s) | Msps | ×B210 | speedup |
+|---|---|---|---|---|---|---|
+| 1 | 1 | 0.1185 | ±0.0099 | 168.8 | **2.75×** | 1.00× |
+| 2 | 2 | 0.2379 | ±0.0695 | 168.1 | 2.74× | 1.00× |
+| 4 | 4 | 0.2703 | ±0.0293 | 295.9 | 4.82× | 1.75× |
+| 8 | 8 | 0.5007 | ±0.0898 | 319.5 | 5.20× | 1.89× |
+| 16 | 16 | 0.9175 | ±0.0729 | 348.8 | **5.68×** | 2.07× |
+
+**A single chain sustains 2.75× a B210's maximum rate** through eight multiply/divide stages.
+SIMD is clearly working: 168.8 Msps × 16 blocks ≈ 2.7 G block-operations/s on one worker, which
+at this clock is only plausible with vectorisation.
+
+### What survives, and what does not
+
+- **Retracted:** "cannot sustain even one radio at full rate." Wrong by ~13×. The practical
+  capability is comfortable — several B210s' worth of headroom per chain.
+- **Survives, but milder:** parallel scaling is still poor. 16 chains yield **2.07×**, not 16×,
+  and 1→2 chains yields *nothing at all* (168.8 → 168.1). The runtime does not use the machine's
+  width. That question is unchanged; its urgency is much reduced.
+- **New finding — graph lifecycle leaks memory.** Seven graph builds produced **8 GiB peak RSS**
+  and **1.7 M page reclaims** for a workload whose live sample data is ~64 MB. Buffers are
+  evidently not released between graph lifecycles. On 16 KiB pages that is ~28 GB of first-touch
+  activity. This is a real defect and it is the dominant cost of any build-run-teardown cycle —
+  which is exactly the shape of a rate sweep, or of any application that reconfigures a flowgraph.
+
+### Methodological lesson
+
+A benchmark must be shown to be measuring its steady state before its numbers mean anything. The
+tell was available in the first run and I did not look for it: `/usr/bin/time -l` costs nothing.
+Every throughput figure in this document is now taken at 20 M samples/chain, where the marginal
+cost per sample dominates the fixed cost.
