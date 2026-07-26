@@ -242,3 +242,42 @@ the destructors find their code. The defect is reachable only via the utility's 
 Consequence: `SoapySDRUtil --probe` is safe to use for hardware verification — all output before
 the crash is valid — but its exit status cannot be trusted. Recorded as an upstream defect;
 not patched, since it does not affect the build under test.
+
+---
+
+## Phase 3.5b — harness confound ruled out; curve re-run on the fixed tree
+
+I flagged a possible confound in my own harness: `womm_bm_scaling` calls `Manager::replacePool()`
+once per data point, so leaked pools could have left stale workers spinning and flattened the
+curve. Settled by instrumenting live thread count (`task_threads`) and re-running the sweep two
+ways — in one process, and one process per point.
+
+| chains | A: in-process | B: per-process | live threads | expected |
+|---|---|---|---|---|
+| 1 | 8.4 Msps | 8.4 | 3 | 3 |
+| 2 | 15.5 | 15.2 | 4 | 4 |
+| 4 | 24.2 | 24.4 | 6 | 6 |
+| 8 | 27.4 | 23.3 | 10 | 10 |
+| 16 | 25.9 | 25.4 | 18 | 18 |
+
+**No leak.** Live thread count is exactly `nThreads + 2` at every point, identical in both
+methods; a leak would have made A grow relative to B. Throughputs agree within noise throughout.
+**The plateau is real, not an artefact of my harness.**
+
+### The correctness fixes do not move throughput
+
+Cherry-picked tree vs stock baseline: 8.4/15.5/24.2/27.4/25.9 against 8.5/15.2/24.9/26.9/24.7
+Msps. Unchanged within noise, as expected — they fix a watchdog leak, a deadlock, restart
+correctness and some allocation churn, none of which is on this hot path. **The ceiling is
+untouched by them**, which further isolates it to the wake/sleep and buffer paths.
+
+### Where the diagnosis now stands
+
+18 live threads producing ~8 processor-equivalents of load, predominantly **system** time,
+with throughput flat from 4 chains on. Threads exist and are scheduled; they are not computing.
+Remaining suspects, in the order the evidence now supports:
+
+1. macOS 10 µs `sleep_for` polling loop (`thread_pool.hpp:635-657`) — syscall per iteration
+2. Absent Darwin QoS (`thread_affinity.hpp`, 15 no-op sites) — no P-core preference
+3. Mirror-`memcpy` (`CircularBuffer.hpp:352-378`) — demoted; would burn user, not system, time
+4. Strided block→thread partitioning (`Scheduler.hpp:1378-1385`)

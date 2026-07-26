@@ -30,6 +30,8 @@
 #include <gnuradio-4.0/Scheduler.hpp>
 #include <gnuradio-4.0/thread/thread_pool.hpp>
 
+#include <mach/mach.h>   // live thread count, to detect pool leaks across data points
+
 #include <gnuradio-4.0/math/Math.hpp>
 #include <gnuradio-4.0/testing/NullSources.hpp>
 
@@ -73,6 +75,19 @@ void addChain(gr::Graph& graph, std::size_t chainId) {
     mustConnect(graph.connect(*last, "out"s, sink, "in"s, {.minBufferSize = kBufferSize}), "div->sink");
 }
 
+// Replacing the pool per data point may leak the previous pool's workers. If it does,
+// stale workers keep spinning in the macOS 10us sleep_for loop and contaminate every
+// later point. Count live threads so the confound is visible rather than assumed.
+std::size_t liveThreads() {
+    mach_msg_type_number_t n = 0;
+    thread_act_array_t     list{};
+    if (task_threads(mach_task_self(), &list, &n) != KERN_SUCCESS) {
+        return 0UZ;
+    }
+    vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(list), n * sizeof(thread_act_t));
+    return static_cast<std::size_t>(n);
+}
+
 void sizeCpuPool(std::uint32_t nThreads) {
     using namespace gr::thread_pool;
     auto pool = std::make_shared<ThreadPoolWrapper>(std::make_unique<BasicThreadPool>(std::string(kDefaultCpuPoolId), TaskType::CPU_BOUND, nThreads, nThreads), "CPU");
@@ -100,15 +115,19 @@ double runOnce(std::size_t nChains) {
     return std::chrono::duration<double>(t1 - t0).count();
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     std::println("womm parallel-chain scaling");
     std::println("hardware_concurrency = {}, depth = {} mul/div pairs, {} samples/chain, {} runs/point",
                  std::thread::hardware_concurrency(), kDepth, kSamplesPerChain, kRepeat);
     std::println("");
-    std::println("{:>7}  {:>8}  {:>11}  {:>9}  {:>8}  {:>10}", "chains", "threads", "median_s", "spread_s", "Msps", "xB210");
+    std::println("{:>7}  {:>8}  {:>11}  {:>9}  {:>8}  {:>10}  {:>7}", "chains", "threads", "median_s", "spread_s", "Msps", "xB210", "live");
 
     double baseline = 0.0;
-    for (std::size_t nChains : {1UZ, 2UZ, 4UZ, 8UZ, 16UZ}) {
+    std::vector<std::size_t> points = {1UZ, 2UZ, 4UZ, 8UZ, 16UZ};
+    if (argc > 1) { // one process per point: no pool-replacement confound at all
+        points = {static_cast<std::size_t>(std::atol(argv[1]))};
+    }
+    for (std::size_t nChains : points) {
         sizeCpuPool(static_cast<std::uint32_t>(nChains));
 
         std::vector<double> times;
@@ -126,7 +145,7 @@ int main() {
             baseline = msps;
         }
 
-        std::println("{:>7}  {:>8}  {:>11.4f}  {:>9.4f}  {:>8.1f}  {:>9.2f}x", nChains, nChains, median, spread, msps, msps * 1e6 / kB210MaxRate);
+        std::println("{:>7}  {:>8}  {:>11.4f}  {:>9.4f}  {:>8.1f}  {:>9.2f}x  {:>7}", nChains, nChains, median, spread, msps, msps * 1e6 / kB210MaxRate, liveThreads());
     }
 
     std::println("");
