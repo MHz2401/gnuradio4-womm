@@ -101,3 +101,55 @@ wanted. None are fixed at this stage.
 | Double-mapped buffer fallback on macOS is silent — no warning, no log, no `static_assert` | `CircularBuffer.hpp:777-783` |
 | Every SoapySDR source file is excluded from all CI (no CI image installs SoapySDR) | `blocks/sdr/CMakeLists.txt:9` |
 | macOS CI runs only on push-to-main and `workflow_dispatch`, never on PRs | `.github/workflows/ci-macos.yml` |
+
+---
+
+## Category E — cherry-picked upstream fixes (provenance table, §4)
+
+**Source: `fair-acc/gnuradio4`, branch `main`.** Fetch-only remote `upstream-fair`; never merged
+wholesale. Snapshot `womm-known-good/2026-07-26` tagged before the fetch, per `MANIFEST.md` §8.
+
+### ⚠ Licensing — the tree is no longer purely MIT
+
+`gnuradio/gnuradio4` (our base, `44275ed`, 2026-06-07) is **MIT**. `fair-acc/gnuradio4` relicensed
+to **LGPL-3.0-or-later with linking exception** in `8c1dcb4` (2026-06-08, *"Putting the GNU back
+into GNU Radio 4.0"*) — one day after our baseline. Four of the five picks postdate that.
+
+**This tree therefore contains LGPL-derived code while `LICENSE` still says MIT.** Accepted
+deliberately by the owner: this build is never distributed (§4 — no PR, no push, no upstream
+contribution), and LGPL obligations attach to distribution rather than to private use. **If that
+ever changes, this section is the thing to read first.** Reverting the four post-relicense picks
+(all but `9728d03`) restores an MIT-only tree.
+
+| Pick (ours) | Source SHA | Date | Licence era | Subject | Touches | Why taken |
+|---|---|---|---|---|---|---|
+| `e929237` | `9728d03` | 2026-05-14 | **MIT** | RT-safe housekeeping for CircularBuffer of aggregate T | Buffer, CircularBuffer, DataSet, Message, Port, Block, qa | prerequisite for the later picks; adds `qa_BlockHouseKeeping` |
+| `ef36879` | `83722e1` | 2026-06-23 | LGPL | Fix deadlock when processing kGraphGRC Set messages | Scheduler | a deadlock in the message path |
+| `bc4fa45` | `e6f0d92` | 2026-06-27 | LGPL | Schedulers call `init()` when `reset()`ing | Scheduler | restart correctness — a rate sweep restarts repeatedly |
+| `86ce450` | `1240bc3` | 2026-06-23 | LGPL | **Prevent watchdog thread leak** | Scheduler | **the blocker.** Watchdogs sleeping during a scheduler restart accumulate and keep running |
+| `321a20b` | `2b85bf5` | 2026-06-23 | LGPL | perf: drop per-round `shared_ptr` churn in CircularBuffer scalar queries | CircularBuffer | hot-path allocation churn |
+
+**Order matters.** `1240bc3` and `2b85bf5` conflict if applied first; `83722e1` and `e6f0d92`
+move `Scheduler.hpp` toward fair-acc's state and both then apply cleanly. `2b85bf5` conflicts only
+in `.gitignore`, resolved in favour of ours to keep the vendor entries.
+
+**Reverse:** `git revert` the five merge-side commits, or reset to `womm-known-good/2026-07-26`.
+
+### E-1 — libc++ portability shim (ours, required by the above)
+
+`9728d03` calls `shrink_to_fit()` on `property_map` (`std::unordered_map`). That is a **libstdc++
+extension, not standard**; libc++ does not provide it. Five build errors on Apple clang 21.
+
+fair-acc reverted macOS ARM64 support in `ac59533` (2026-05-04); this commit landed ten days
+later. Having stopped building against libc++, libstdc++-only code is no longer caught there — in
+violation of their own `CLAUDE.md:249` ("only use features available in both").
+
+Fix: `gr::meta::shrinkIfSupported()` in `meta/include/gnuradio-4.0/meta/utils.hpp`, used in
+`Message.hpp` and `DataSet.hpp`; `CircularBuffer.hpp` uses the equivalent inline `if constexpr`.
+The helper **must** be a template — a requires-expression inside a non-templated function has no
+substitution context and hard-errors instead of yielding `false`. That is exactly why `Message`
+(a plain struct) failed while `DataSet` and `CircularBuffer` (class templates) did not.
+
+*Upstream-shaped:* this is the fix upstream would need to take to restore libc++ support.
+
+*Unnecessary when:* upstream drops the call, guards it itself, or restores libc++ CI.
