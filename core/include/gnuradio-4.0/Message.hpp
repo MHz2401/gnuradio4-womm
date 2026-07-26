@@ -119,14 +119,9 @@ struct Message {
         serviceName.shrink_to_fit();
         clientRequestID.shrink_to_fit();
         endpoint.shrink_to_fit();
-#if defined(__GLIBCXX__) && !defined(__ACPP__)
-        // std::unordered_map::shrink_to_fit() is a libstdc++ extension, not standard,
-        // and libc++ does not provide it. The call is a non-binding capacity hint, so
-        // omitting it on libc++ costs nothing but a little retained memory.
         if (data.has_value()) {
-            data->shrink_to_fit();
+            gr::meta::shrinkIfSupported(*data);
         }
-#endif
         rbac.shrink_to_fit();
     }
 };

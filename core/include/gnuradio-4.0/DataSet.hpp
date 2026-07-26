@@ -7,6 +7,7 @@
 #include <variant>
 #include <vector>
 
+#include <gnuradio-4.0/meta/utils.hpp>
 #include <gnuradio-4.0/meta/reflection.hpp>
 
 #include "Message.hpp"
@@ -177,7 +178,7 @@ struct DataSet {
         signal_values.shrink_to_fit();
         signal_ranges.shrink_to_fit();
         for (auto& m : meta_information) {
-            m.shrink_to_fit();
+            gr::meta::shrinkIfSupported(m);
         }
         meta_information.shrink_to_fit();
         for (auto& ev : timing_events) {

@@ -263,7 +263,9 @@ private:
                     auto& slot = _data[calculateIndex(i)];
                     slot.clear();
                     if (depth == HouseKeepDepth::Deep) {
-                        slot.shrink_to_fit();
+                        if constexpr (requires { slot.shrink_to_fit(); }) { // libstdc++-only on unordered_map
+                            slot.shrink_to_fit();
+                        }
                     }
                 }
                 _cachedMinReader = freshMin;
