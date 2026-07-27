@@ -49,6 +49,91 @@ line. Three B210s attached over USB 3. Full Xcode, Apple clang 21.
 
 ---
 
+## 1b. PRIORITY TIERS — the owner's ordering. Respect it.
+
+**"Fully operational" means processing capacity approximately linear-proportional to hardware
+capacity.** Until that holds, assume undiscovered surprises: yesterday's independent issue becomes
+tomorrow's dependency and vice versa. Do not treat any tier as finished early.
+
+| Tier | Scope | Contents |
+|---|---|---|
+| **1** | **radio running** — performance while a device streams | thread QoS; scaling plateau; anything that costs throughput with hardware live |
+| **2** | radio off | graph-lifecycle memory; config-time costs; UI/reconfiguration paths |
+| **3+** | everything else | upstream contribution, public-repo polish |
+
+**Upstream contribution is tier 3 or lower** — not for lack of value, but because we are not done
+with a working local system, and premature contribution locks in an incomplete picture.
+
+**`scripts/build.sh` and `scripts/verify.sh` missing is a *symptom* that tiers 1–2 are unfinished
+— but the converse does not hold.** Expect to need both *before* reaching fully-operational.
+
+**The soak test is the yardstick for "done"** in both tier 1 (radio on) and tier 2 (radio off),
+judged against the linear-proportionality criterion above.
+
+**Making things work at capacity outranks formal QA for a public repo.**
+
+---
+
+## 1c. GLOSSARY — terms used loosely in prior sessions
+
+Written because a successor will otherwise assume the owner has internalised shorthand he has seen
+once. Prefer these full phrasings over the shorthand.
+
+| Term | Means |
+|---|---|
+| **wall time** | elapsed real-world clock time, as opposed to CPU time consumed |
+| **user / system time** | CPU seconds spent in the program vs in kernel calls. Can exceed wall time when threads run in parallel — 71 s of system time in a 5 s run means ~13 cores were in the kernel |
+| **involuntary context switch** | the OS preempted a thread that still wanted to run. Millions per second indicates thrash, not work |
+| **condvar** | `std::condition_variable`. Lets a thread *block* until signalled, instead of repeatedly waking to check |
+| **lost wakeup** | a signal sent while the waiter is between "checked the condition" and "went to sleep", so it sleeps anyway |
+| **livelock** | threads are running but no progress is made — distinct from deadlock, where they are stopped |
+| **steady state** | the regime after start-up costs are amortised. A benchmark too short to reach it measures set-up, not throughput |
+| **setup-dominated** | a measurement where construction/initialisation exceeds the work being timed. Caused two wrong conclusions here |
+| **spread** | half the range between fastest and slowest run. A "±0.02 s spread" means run-to-run variation, not measurement error |
+| **drift** | our local deviations from upstream source. Tracked in `DRIFT.md` |
+| **cherry-pick** | copying one upstream commit onto our branch without merging its whole history |
+| **ABI** | binary-level compatibility between separately-compiled code. Mismatches appear as link errors or crashes, not compile errors |
+| **SFINAE / `requires`** | compile-time feature detection. Used here to skip a function that does not exist on this standard library |
+| **keg-only** (Homebrew) | installed but deliberately not linked into `PATH`, so it shadows nothing |
+| **poured from bottle** (Homebrew) | installed as a precompiled binary rather than built here — relevant to provenance |
+| **strided round-robin** | work assigned as 1st→thread A, 2nd→thread B, 3rd→thread A… so *adjacent* pipeline stages land on *different* threads |
+| **oversubscription** | more worker threads than usable cores, so they contend rather than add throughput |
+
+### The "19 % wall cost" — clarified, since prior wording was sloppy
+
+Prior sessions called it a *regression*. That was the wrong word: nothing returned to an earlier
+state. It is a **trade**, and here is the whole of it.
+
+`qa_BasicFileIo` — one short, largely single-threaded test — took **5.46 s** with upstream's
+10 µs polling loop and **6.48 s** after our condvar fix. That single number is the entire cost.
+
+Answering the natural questions directly:
+
+- **Is it an artefact of testing?** Largely yes. It is one short test with little parallel work.
+- **Does it indicate a real-world bottleneck?** No, and the evidence runs the other way: the full
+  test suite got **2.6× faster**, scaling throughput **+26 %**, and the B210 ceiling **+22 %**.
+  Every workload with actual parallelism improved.
+- **Is the test↔runtime relationship known?** Partly. Four measurements, three strongly improved.
+- **Does it mean something is untested?** It reveals *why* the trade exists: the polling loop
+  bought 10 µs task-pickup latency by burning ~13 cores continuously. A workload that submits many
+  tiny tasks and has little parallel work is the one case where paying those cores is worth it.
+- **What changed, precisely?** Better: CPU 47×, suite time 2.6×, scaling +26 %, radio ceiling
+  +22 %, and an intermittent hang eliminated. Worse: this one test's wall time, by 1.02 s.
+
+**It is a latency-versus-throughput trade, not a bottleneck.**
+
+### Runtime graph reconfiguration — it IS a live capability
+
+Checked, not assumed. The scheduler handles `kEmplaceBlock`, `kRemoveBlock`, `kReplaceBlock`,
+`kEmplaceEdge`, `kRemoveEdge` and `kGraphGRC` as messages (`Scheduler.hpp:57-69`), so gr4 is
+designed to modify a graph **while it runs** — this is not merely a UI/config-time concern.
+
+**But the 8 GiB / 1.7 M page-reclaim measurement is of full graph construct-and-destroy cycles,
+which is a config-time cost (tier 2).** Whether *incremental* runtime edits leak is **untested**
+and would be tier 1. Those are different code paths; do not conflate them.
+
+---
+
 ## 2. INVARIANTS — settled. Do not re-open without a reason.
 
 Evidence for every one of these is in `BUILD_JOURNAL.md` (decisions D1–D7) and `RESULTS.md`.
