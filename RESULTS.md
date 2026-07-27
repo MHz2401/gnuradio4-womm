@@ -655,3 +655,84 @@ The main thread in a hung run is stuck in
 `poolWorker → BlockWrapper<BasicFileSink<double>>::work → workInternal` under a **singleThreaded**
 scheduler. Whether that is an independent defect or a downstream consequence of CPU starvation
 from the polling storm is not yet determined.
+
+---
+
+## ★★ THE FIX — shared-mutex condvar replaces the macOS polling loop
+
+Implemented the fix identified above. **Net −4 lines of code.** Results across every measurement
+this project has taken.
+
+### The change
+
+`core/include/gnuradio-4.0/thread/thread_pool.hpp`:
+
+1. Added `std::mutex _conditionMutex` beside `_condition`.
+2. `worker()` no longer creates a **function-local** `std::mutex` per thread. That was the actual
+   POSIX violation: every concurrent waiter on one condition variable must use the **same** mutex.
+   Linux tolerates the violation; macOS returns EINVAL — which is why the polling loop existed.
+3. The wait now takes `_conditionMutex` in a narrow scope, so workers block instead of polling.
+4. **The entire `#if defined(__APPLE__)` branch is deleted.** One code path for all platforms.
+5. The task-submission path notifies while holding the shared mutex, closing a lost-wakeup window
+   that could otherwise stall a worker for `keepAliveDuration` (10 s).
+
+### Results
+
+**CPU burn — `qa_BasicFileIo`, a file test that never uses the pool:**
+
+| | upstream | fixed | factor |
+|---|---|---|---|
+| user | 2.71 s | 1.28 s | 2.1× less |
+| **system** | **71.54 s** | **0.30 s** | **238× less** |
+| involuntary ctx switches | 2,974,438 | 3,817 | **779× less** |
+| **total CPU** | **74.25 s** | **1.58 s** | **47× less** |
+| wall | 5.46 s | 6.48 s | 19 % worse |
+
+**Test suite (serial):**
+
+| | before | after |
+|---|---|---|
+| result | 100/102, `qa_BasicFileIo` **Timeout** | **101/102** |
+| wall | 461.68 s | **180.56 s** (2.6× faster) |
+
+The only remaining failure is the known environmental `qa_SoapySource` RTL-SDR case.
+**The ~33 % intermittent `qa_BasicFileIo` hang is gone** — the stability blocker is cleared.
+
+**Parallel-chain scaling (20 M samples/chain):**
+
+| chains | before | after | change |
+|---|---|---|---|
+| 1 | 168.8 | 167.6 | — |
+| 2 | 168.1 | 170.0 | — |
+| 4 | 295.9 | 303.4 | +2.5 % |
+| 8 | 319.5 | **439.7** | **+37.6 %** |
+| 16 | 348.8 | 404.5 | +16.0 % |
+
+Peak **+26 %**; best speedup **2.07× → 2.62×**; run-to-run spread **3.4× tighter**
+(±0.0729 → ±0.0215 s at 16 chains).
+
+**B210 end-to-end:**
+
+| requested | before | after |
+|---|---|---|
+| 16 MS/s | 15.93 (0.996) | **15.98 (0.999)** |
+| 32 | 24.76 | 25.90 |
+| 56 | 26.68 | **32.50 (+21.8 %)** |
+
+The radio ceiling rises from ~26.7 to ~32.5 MS/s.
+
+### What is NOT fixed — stated plainly
+
+**The scaling plateau survives.** 2.62× on a 16 P-core machine is still far from linear, and
+16 chains is now genuinely *worse* than 8 (404.5 vs 439.7, and the spreads no longer overlap, so
+this is real rather than noise). The polling storm was a **contributor, not the cause**.
+
+Remaining suspects, untested: strided block→thread partitioning
+(`Scheduler.hpp:1378-1385`), absent Darwin QoS (`thread_affinity.hpp`, 15 no-op sites), the macOS
+mirror-`memcpy` (`CircularBuffer.hpp:352-378`), and oversubscription past 8 workers.
+
+**Wall time on a single short test is 19 % worse** than the polling loop. That is inherent: a
+condvar wakeup costs more than a 10 µs poll that is already spinning. Notifying under the mutex
+did not recover it (6.50 s vs 6.48 s), so it is latency, not a lost wakeup. The trade — 47× less
+CPU for 19 % more wall on one short test — is overwhelmingly favourable, and the full suite got
+**2.6× faster**, so the effect does not generalise to real workloads.

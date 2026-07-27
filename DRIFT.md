@@ -153,3 +153,51 @@ substitution context and hard-errors instead of yielding `false`. That is exactl
 *Upstream-shaped:* this is the fix upstream would need to take to restore libc++ support.
 
 *Unnecessary when:* upstream drops the call, guards it itself, or restores libc++ CI.
+
+---
+
+## Category F — the thread-pool condvar fix (our most significant change)
+
+`core/include/gnuradio-4.0/thread/thread_pool.hpp`. **Net −4 lines.** Full measurements in
+`RESULTS.md` ("THE FIX").
+
+### What was wrong upstream
+
+`worker()` declared a **function-local** `std::mutex` per thread and waited on the *shared*
+`_condition` while holding it. POSIX requires all concurrent waiters on one condition variable to
+use the **same** mutex. Linux tolerates the violation; macOS returns EINVAL. Upstream's response
+was a macOS-only `sleep_for(10 µs)` polling loop (`#if defined(__APPLE__)`), which made every
+gnuradio4 process on this machine issue ~2.4 M `nanosleep` syscalls/s from 24 eagerly-created
+idle workers — ~13 cores permanently in the kernel.
+
+### What we changed
+
+1. `std::mutex _conditionMutex` added beside `_condition`.
+2. Per-thread local mutex removed; the wait takes the shared mutex in a narrow scope.
+3. **The `#if defined(__APPLE__)` branch is deleted** — one blocking path for all platforms.
+4. Task submission notifies under the shared mutex, closing a lost-wakeup window worth up to
+   `keepAliveDuration` (10 s).
+
+### Effect
+
+| Measure | Before | After |
+|---|---|---|
+| system CPU (`qa_BasicFileIo`) | 71.54 s | **0.30 s** (238×) |
+| involuntary context switches | 2,974,438 | **3,817** (779×) |
+| total CPU | 74.25 s | **1.58 s** (47×) |
+| serial ctest | 100/102, `qa_BasicFileIo` Timeout | **101/102** |
+| suite wall time | 461.68 s | **180.56 s** (2.6×) |
+| scaling peak | 348.8 Msps | **439.7** (+26 %) |
+| B210 ceiling | 26.68 MS/s | **32.50** (+22 %) |
+
+Costs 19 % wall time on one short single-threaded test — inherent condvar wakeup latency versus a
+poll that is already spinning. Does not generalise: the full suite got 2.6× faster.
+
+### Reconciliation path
+
+**This is upstream-shaped and should be offered upstream**, licensing permitting — it removes a
+platform branch rather than adding one, and fixes a genuine POSIX violation rather than working
+around it. *Unnecessary when:* upstream adopts a shared-mutex condvar. Note the fix is **ours**
+(original work), so unlike the LGPL cherry-picks it carries no licensing obstacle to contribution.
+
+**Reverse:** `git revert` the fix commit; nothing else depends on it.

@@ -174,10 +174,12 @@ Measured on `qa_BasicFileIo` — a file test that never uses the pool:
 Causally confirmed: 10 us -> 2 ms cut system time **97.4 %** (71.54 s -> 1.85 s) but made wall
 time **70 % worse**. So a bigger constant is NOT the fix.
 
-**THE FIX (next session's main event):** give all waiters on the condvar a **shared mutex** —
-which is what POSIX requires and what the EINVAL is actually complaining about — restoring
-blocking waits on macOS. Upstream-shaped change to `BasicThreadPool`. Not attempted yet; it is a
-real design change and deserves a session with the thread-pool tests in front of it.
+**THE FIX — DONE.** Shared `_conditionMutex`, per-thread local mutex removed, `__APPLE__` branch
+deleted, submission notifies under the lock. **Net −4 lines.** See `DRIFT.md` Category F.
+Results: system CPU 238× lower, context switches 779× lower, total CPU 47× lower, serial ctest
+100/102 → **101/102** with the `qa_BasicFileIo` hang **gone**, suite 2.6× faster, scaling peak
++26 %, B210 ceiling +22 % (26.7 → 32.5 MS/s). Costs 19 % wall on one short test (inherent condvar
+latency); does not generalise.
 
 Explains: the owner's system-vs-user observation, the 3 M context switches in the scaling
 benchmark, and why `qa_BasicFileIo` hangs ~33 % of the time **when run alone** but passes under

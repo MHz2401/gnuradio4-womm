@@ -341,6 +341,11 @@ class BasicThreadPool {
     std::atomic_bool _shutdown    = false;
 
     std::condition_variable _condition;
+    // POSIX requires every concurrent waiter on a condition_variable to use the SAME
+    // mutex. worker() previously used a function-local mutex per thread, which Linux
+    // tolerates but macOS rejects with EINVAL - which is why an __APPLE__ polling loop
+    // existed here. A shared mutex satisfies POSIX and lets every platform block.
+    std::mutex _conditionMutex;
     std::atomic_size_t      _numTaskedQueued = 0U; // cache for _taskQueue.size()
     std::atomic_size_t      _numTasksRunning = 0U;
     TaskQueue               _taskQueue;
@@ -451,7 +456,13 @@ public:
         _numTaskedQueued.fetch_add(1U);
 
         _taskQueue.push(createTask<taskName, priority, cpuID>(std::forward<decltype(func)>(func), std::forward<decltype(func)>(args)...));
-        _condition.notify_one();
+        {
+            // Notify under the shared mutex. Without it a worker can evaluate the
+            // predicate as false and block before this notify lands, losing the wakeup
+            // and stalling until keepAliveDuration (10 s) expires.
+            std::lock_guard lock(_conditionMutex);
+            _condition.notify_one();
+        }
 
         spinWait.spinOnce();
         spinWait.spinOnce();
@@ -608,8 +619,6 @@ private:
         constexpr uint32_t N_SPIN       = 1 << 8;
         uint32_t           noop_counter = 0;
         // _numThreads incremented in createWorkerThread()
-        std::mutex       mutex;
-        std::unique_lock lock(mutex);
         auto             lastUsed              = std::chrono::steady_clock::now();
         auto             timeDiffSinceLastUsed = std::chrono::steady_clock::now() - lastUsed;
         bool             running               = true;
@@ -637,23 +646,10 @@ private:
                 noop_counter = noop_counter / 2;
                 cleanupFinishedThreads();
 
-#if defined(__APPLE__)
-                // macOS + Homebrew libc++ workaround: condition_variable::wait_for() with per-thread
-                // mutexes triggers EINVAL (POSIX requires same mutex for all concurrent waiters on
-                // the same condvar, and macOS enforces this unlike Linux).
-                // Use a short-sleep polling loop with 10μs granularity instead.
                 {
-                    auto deadline = std::chrono::steady_clock::now() + keepAliveDuration;
-                    while (!(numTasksQueued() > 0 || isShutdown())) {
-                        if (std::chrono::steady_clock::now() >= deadline) {
-                            break;
-                        }
-                        std::this_thread::sleep_for(std::chrono::microseconds(10));
-                    }
+                    std::unique_lock lock(_conditionMutex);
+                    _condition.wait_for(lock, keepAliveDuration, [this] { return numTasksQueued() > 0 || isShutdown(); });
                 }
-#else
-                _condition.wait_for(lock, keepAliveDuration, [this] { return numTasksQueued() > 0 || isShutdown(); });
-#endif
             }
             // check if this thread is to be kept
             timeDiffSinceLastUsed = std::chrono::steady_clock::now() - lastUsed;
