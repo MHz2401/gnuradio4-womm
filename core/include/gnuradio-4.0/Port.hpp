@@ -865,10 +865,16 @@ public:
                 } else {
                     _ioHandler = BufferType(min_size).new_writer();
                 }
+                // The tag ring holds only tags still IN FLIGHT, never a slot per sample, so
+                // sizing it from the stream buffer is pure waste: at sizeof(Tag) == 128 on
+                // Apple ARM64 a 65536-sample edge cost 16 MiB of tags against 256 KiB of
+                // stream, and that term alone was most of a graph's ~6.9 GiB footprint.
+                // Approach taken from fair-acc/gnuradio4 (92278b6), which caps it the same way.
+                const std::size_t tagSize = std::min(min_size, kDefaultBufferSize);
                 if (isOverride(tagResource)) {
-                    _tagIoHandler = TagBufferType(min_size, std::pmr::polymorphic_allocator<typename TagBufferType::value_type>(tagResource)).new_writer();
+                    _tagIoHandler = TagBufferType(tagSize, std::pmr::polymorphic_allocator<typename TagBufferType::value_type>(tagResource)).new_writer();
                 } else {
-                    _tagIoHandler = TagBufferType(min_size).new_writer();
+                    _tagIoHandler = TagBufferType(tagSize).new_writer();
                 }
             } catch (const std::exception& e) {
                 return std::unexpected(Error(std::format("failed to resize buffer to {}: {}", min_size, e.what())));

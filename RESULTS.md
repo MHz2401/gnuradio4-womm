@@ -938,3 +938,35 @@ so tag buffers stay on the copying path and are untouched by the Category G fix.
 
 **Open, tier 2:** decouple tag-buffer sizing from stream-buffer sizing. Nothing in this workload
 needs 65536 tags in flight per port.
+
+### 6.7 Upstream scan — all five defects are novel; one fix ran the other way
+
+Done at the owner's suggestion: a high-impact finding is worth checking against the better-staffed
+fork before assuming it is new. Compared ours, `fair-acc/main` (`92278b6`) and
+`gnuradio/gnuradio4-core` (`c35f5c8`, the split-repo direction gnuradio.org is moving to).
+
+| Defect | ours | fair-acc | gnuradio4-core |
+|---|---|---|---|
+| G-1 Linux-only mmap gate | fixed | unfixed | unfixed |
+| G-2 dead code / resource override | fixed | **unfixed** | **unfixed** |
+| G-3 missing release fence | fixed | **unfixed** | **unfixed** |
+| G-4 mmap hole race | fixed | **unfixed** | **unfixed** |
+| G-5 deallocate unmaps half | fixed | **unfixed** | **unfixed** |
+| G-6 tag ring sized per-sample | **was unfixed** | **FIXED** | unfixed |
+
+**All five present in both upstreams.** G-1 is expected (fair-acc dropped macOS ARM64). But G-3, G-4
+and G-5 are **latent on Linux in both trees** — unreachable only because of G-2, and they would bite
+the moment anyone fixed it. G-4 is silent corruption, not merely a crash.
+
+**And the traffic ran the other way once.** fair-acc had already capped the tag ring, which we had
+not: a tag ring holds only tags still *in flight*, never a slot per sample. Adopting
+`std::min(min_size, kDefaultBufferSize)`:
+
+| | before | after |
+|---|---|---|
+| peak RSS, 16-chain graph | 6.92 GiB | **2.27 GiB** (3.05×) |
+| page reclaims | 423 210 | **139 367** |
+| throughput | 2416 Msps | 2409 (unchanged, within noise) |
+
+That closes the item §4.3's withdrawn "leak" turned out to actually be — **a 3× memory cut for one
+line, found by reading upstream rather than by inventing a fix.** New invariant I-14.

@@ -163,8 +163,9 @@ Evidence for every one of these is in `BUILD_JOURNAL.md` (decisions D1–D7) and
 | I-6 | **Vendored files must be `git add -f`** | repo `.gitignore` rule `lib/` silently swallows all of `vendor/SoapySDR/lib/` |
 | I-7 | **`.gitattributes: vendor/** -text`** must stay | `core.autocrlf=input` otherwise rewrites vendored bytes and breaks verification |
 | I-8 | **The tree is MIT on paper, LGPL-derived in fact** | four cherry-picks postdate fair-acc's relicensing; fine while never distributed. `DRIFT.md` Category E |
-| I-9 | **fair-acc is NOT a tracking target** | it reverted macOS ARM64 support (`ac59533`). Cherry-pick individual fixes only |
+| I-9 | **fair-acc is NOT a tracking target, but it IS worth reading** | it reverted macOS ARM64 support (`ac59533`), so never merge it wholesale — cherry-pick individual fixes. The split is a licence dispute, not a technical one: gnuradio.org insists on MIT, fair-acc on LGPL-3.0. `gnuradio/gnuradio4` (our base) periodically forks from the better-staffed fair-acc, so our tree is somewhat stale by construction. See I-14 |
 | I-10 | **gr4 source drift must stay small** and every change logged in `DRIFT.md` | forward-compat is a stated objective; currently 14 files |
+| I-14 | **Check a high-impact finding against BOTH upstreams before assuming it is novel** — and before inventing a fix | `fair-acc/main` is better-staffed and sometimes ahead: it had already fixed the tag-ring sizing we had not. It is also *behind* on all five ring-buffer defects. `gnuradio/gnuradio4-core` (+`-library`, `-blocks`, `-studio`) is the split-repo direction gnuradio.org is moving to and is worth the same check. See `DRIFT.md` Category G |
 
 ### ⚠ RF TRANSMISSION SAFETY — read before any hardware test
 
@@ -424,19 +425,23 @@ USB/UHD/`ioReadLoop`.
 Items 1 (condvar fix) and 4's scaling entry are complete; §4.2's fix landed and the scaling plateau
 turned out to be the buffer, see `DRIFT.md` Category G and `RESULTS.md` §6.
 
-1. **Tag-buffer sizing (tier 2, cheap, large).** `Port::resizeBuffer` gives the tag buffer the same
-   *element* count as the stream buffer; at `sizeof(Tag) == 128` that is 16 MiB per connected port.
-   This is the whole of the ~6.9 GiB-per-graph footprint. Decouple the two.
+1. ~~Tag-buffer sizing~~ **DONE.** Capped at `min(min_size, kDefaultBufferSize)`, matching
+   fair-acc. Peak RSS **6.92 → 2.27 GiB**, throughput unchanged. See `DRIFT.md` G-6.
 2. **`B_max` hardware harness (tier 1).** N radio chains + M synthetic ballast chains in ONE graph
    and scheduler; `B_max` = the largest M with zero overflows for T seconds. Radios alone cannot
    load this machine (3 × ~32 MS/s against 2416 Msps), so they serve as a *deadline probe*. A
    threshold resolvable by bisection beats a noisy Msps figure. RX-only by construction — the TU
    must not include `SoapySink`, and the `nm -C` gate on the linked binary is the check.
-3. **Verify the single-channel B210 ceiling.** The recorded 32.5 MS/s may be the 2×2 figure; 1×1
-   should reach ~61.44 MS/s. If so the "ceiling" is a configuration artefact, not a transport limit,
-   and every `B_max` figure anchored to it is anchored wrongly.
-4. **Serialise device tests** — ctest `RESOURCE_LOCK` or a fixture; upstream-shaped, no patch.
-5. Deferred: default pool size is `hardware_concurrency()` = 24 on this machine, which puts 8
+3. **Make the B210 sweep survive an OVERFLOW.** The 56 MS/s point dies on an *uncaught* exception
+   out of the scheduler (`SoapySource.hpp:785`, surfaced at `Scheduler.hpp:486`). The watchdog
+   rework covers a wedged graph, not a throw. Needed **before** `B_max`, which deliberately
+   bisects past the overflow threshold.
+4. **Verify the single-channel B210 ceiling.** Owner's hypothesis: the recorded 32.5 MS/s may be
+   the 2×2 figure and 1×1 should reach ~61.44. Evidence so far leans *against* it — at 32 MS/s the
+   link carries only ~128 MB/s against USB 3's practical ~400 MB/s, so **bandwidth is not the
+   limiter**, which points at per-read overhead on the fixed 8192-sample reads. Unproven either way.
+5. **Serialise device tests** — ctest `RESOURCE_LOCK` or a fixture; upstream-shaped, no patch.
+6. Deferred: default pool size is `hardware_concurrency()` = 24 on this machine, which puts 8
    workers on utility cores; 16 threads measured faster than 24. `PORTABILITY.md`.
 
 **Do NOT spend time on:** `_nWorkersInWork` cache-line padding or the graph-global `progress`

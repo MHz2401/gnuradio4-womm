@@ -297,6 +297,44 @@ power of two, a whole number of pages — **not deleted, and not weakened**: it 
 alignment, which it never checked before. The heavy suites (`WrapAroundAndEdgeCases`, 822 588
 asserts; `CursorCacheStaleness`, 815 636) now exercise the double-mapped path and pass.
 
+### Checked against both upstreams — all five are novel, 2026-07-27
+
+Scanned at the owner's suggestion, because a high-impact finding is worth checking against the
+better-staffed fork before assuming it is new. Three trees compared: ours, `fair-acc/main`
+(`92278b6`), and `gnuradio/gnuradio4-core` (`c35f5c8`, the split-repo direction gnuradio.org is
+moving to — alongside `-library`, `-blocks`, `-studio`).
+
+| Defect | ours | fair-acc | gnuradio4-core |
+|---|---|---|---|
+| G-1 Linux-only mmap gate | fixed | unfixed | unfixed |
+| G-2 dead code / resource override | fixed | **unfixed** | **unfixed** |
+| G-3 missing release fence | fixed | **unfixed** | **unfixed** |
+| G-4 mmap hole race | fixed | **unfixed** | **unfixed** |
+| G-5 deallocate unmaps half | fixed | **unfixed** | **unfixed** |
+| G-6 tag ring sized per-sample | **was unfixed** | **FIXED** | unfixed |
+
+**All five are present in both upstreams.** G-1 is expected — fair-acc dropped macOS ARM64
+(`ac59533`), so a Linux-only gate costs them nothing. But **G-3, G-4 and G-5 are latent on Linux**
+in both trees: they are unreachable only because of G-2, and would bite the moment anyone fixed it.
+G-4 in particular is a silent-corruption bug, not merely a crash.
+
+Line anchors as of the scan: fair-acc `Port.hpp:930` (G-2), `CircularBuffer.hpp:119` (G-4),
+`:153` (G-5), `:382`/`:408`/`:410` (G-3). gnuradio4-core `Port.hpp:856`, `CircularBuffer.hpp:156`,
+`:352`/`:378`/`:380`.
+
+### G-6 — the tag ring was sized per-sample (fair-acc had already fixed this; we had not)
+
+The one place the traffic ran the other way. `Port::resizeBuffer` gave the tag buffer the **same
+element count** as the stream buffer, but a tag ring holds only tags still *in flight*, never a slot
+per sample. At `sizeof(Tag) == 128` on Apple ARM64 a 65536-sample edge cost **16 MiB of tags against
+256 KiB of stream**, and that single term was most of a graph's footprint.
+
+Capped at `std::min(min_size, kDefaultBufferSize)`, matching fair-acc's approach (`92278b6`).
+Measured on the 16-chain graph: **peak RSS 6.92 GiB → 2.27 GiB (3.05×)**, page reclaims 423 210 →
+139 367, throughput unchanged (2409 vs 2416 Msps, within noise).
+
+This closes the tier-2 item that §4.3's withdrawn "leak" turned out to actually be.
+
 ### Reconciliation path
 
 **All three are upstream-shaped and all three are ours** (original work, no LGPL provenance), so
