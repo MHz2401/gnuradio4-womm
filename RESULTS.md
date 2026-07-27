@@ -1174,3 +1174,43 @@ Two consequences:
 **Sequencing constraint:** the radios must be powered and booted, and their reference lock
 established, *before* parameters are applied — and that should be verified by reading the
 `ref_locked`/`gps_locked` sensors rather than by sleeping.
+
+### 8.5 Settings ruled out; the separate-process test needs a barrier
+
+**Settings are not the cap.** The owner supplied a parameter list; diffing it against the harness
+found three genuine gaps — `rx_bandwidths` left at its **500 kHz default** against a 43 MS/s sample
+rate (an analog filter ~86x too narrow), and `emit_timing_tags`/`emit_meta_info` both defaulting to
+**true**, so the read loop builds a `property_map` per timing tag. All three are worth setting
+correctly regardless. None of them moves the ceiling: 3 radios at 43 MS/s went 38.36 → 40.32 MS/s
+aggregate, inside the 38-44 run-to-run band already observed. Now selectable via `WOMM_TUNED=1`.
+
+**`_clockEosReceived` is not a timed start.** Checked, because the guess was reasonable: it is set
+when `clk_in` receives an **END_OF_STREAM** tag and its only effect is `requestStop()`
+(`SoapySource.hpp:420-422`) — shutdown propagation from the timing input, the opposite end of the
+lifecycle. The timed-start equivalent remains `activate(flags | SOAPY_SDR_HAS_TIME, timeNs, ...)`,
+which the block never uses.
+
+**⚠ The separate-process test is confounded and its numbers must not be quoted.** Running one radio
+per process, staggered:
+
+| configuration | result |
+|---|---|
+| 3 processes x 43 MS/s | 9.25 + 23.79, third failed device creation |
+| 2 processes x 20 MS/s | 4.18 + 10.23 |
+| 2 processes x 12 MS/s | 4.35 + 7.30 |
+
+Compare 3 radios at 12 MS/s **in one process**, which passes cleanly at 35.85 MS/s aggregate. The
+separate-process figures are far worse, and the reason is the harness, not the driver: with
+staggered starts one process's B210 bring-up — FPGA load and USB enumeration, ~2.5 s of heavy work
+— lands **inside** another process's measurement window. A process reading 4.18 MS/s that reads 42
+when alone is measuring interference from a neighbour's start-up.
+
+Two design requirements before this test means anything:
+1. **A start barrier.** Every process must reach "streaming" and only then begin measuring, so no
+   measurement window contains any other process's bring-up.
+2. **Simultaneous enumeration fails.** Launching three processes at once produced
+   `device creation failed for [(driver, uhd), (serial, ...)]` — UHD discovery does not tolerate
+   concurrent enumeration, so device acquisition must be serialised even once measurement is not.
+
+Until both hold, **whether the ~40-44 MS/s cap is per-process or global remains open**, and with it
+whether the cause is a lock inside UHD/SoapyUHD or something in the driver or host.

@@ -118,6 +118,26 @@ RadioTap addRadioChain(gr::Graph& graph, const std::string& serial, double rateH
         {"max_time_out_us", std::uint32_t{1000000}},
         {"max_overflow_count", gr::Size_t{0}}, // never stop; we count instead
     };
+
+    // Defaults that are wrong for this workload unless stated explicitly:
+    //   rx_bandwidths defaults to 500 kHz, i.e. an analog filter ~86x narrower than a
+    //     43 MS/s sample rate. Match it to the rate.
+    //   emit_timing_tags/emit_meta_info default to TRUE, so the read loop builds a
+    //     property_map per timing tag. Off unless asked for.
+    if (const char* env = std::getenv("WOMM_TUNED"); env && std::string_view(env) == "1") {
+        cfg["rx_bandwidths"]    = std::vector{rateHz};
+        cfg["emit_timing_tags"] = false;
+        cfg["emit_meta_info"]   = false;
+    }
+    if (const char* env = std::getenv("WOMM_CHUNK"); env) {
+        cfg["max_chunk_size"] = static_cast<std::uint32_t>(std::atol(env));
+    }
+    // Octoclock-G: 10 MHz reference + PPS. Opt-in, because selecting an external
+    // reference that is absent leaves the device unlocked rather than erroring.
+    if (const char* env = std::getenv("WOMM_EXTCLK"); env && std::string_view(env) == "1") {
+        cfg["clock_source"] = std::string("external");
+        cfg["time_source"]  = std::string("external");
+    }
     auto& src = graph.emplaceBlock<gr::blocks::sdr::SoapySource<TRadio, 1UZ>>(cfg);
 
     DivideConst<TRadio>* last = nullptr;
@@ -253,7 +273,19 @@ int main(int argc, char* argv[]) {
         std::println(stderr, "no uhd devices found");
         return 1;
     }
-    if (nRadios > 0UZ && nRadios < serials.size()) {
+    // WOMM_SERIAL_INDEX picks WHICH device, so N single-radio processes can each bind a
+    // different radio. That is the decisive test for where the aggregate cap lives: if
+    // three separate processes each reach the single-radio rate, the ceiling is
+    // per-process and therefore a lock inside the UHD/SoapyUHD library; if they still
+    // sum to ~44 MS/s, it is global and belongs to the driver or the host.
+    if (const char* env = std::getenv("WOMM_SERIAL_INDEX"); env) {
+        const std::size_t idx = static_cast<std::size_t>(std::atol(env));
+        if (idx >= serials.size()) {
+            std::println(stderr, "WOMM_SERIAL_INDEX={} but only {} device(s) found", idx, serials.size());
+            return 1;
+        }
+        serials = {serials[idx]};
+    } else if (nRadios > 0UZ && nRadios < serials.size()) {
         serials.resize(nRadios);
     }
 
