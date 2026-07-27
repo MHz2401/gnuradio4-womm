@@ -191,6 +191,16 @@ protected:
 
     WatchdogThreadHandle _lastWatchDogThread;
 
+    // Fast-path guards for the two per-iteration housekeeping calls in poolWorker.
+    // Both containers are empty in steady state, yet every worker took a GLOBAL mutex
+    // on every pass to look at them - so N workers serialised on one lock. Profiling a
+    // 3-radio run put the contended mutex path in adoptBlocks/cleanupZombieBlocks, not
+    // in the radio or USB path at all. Each flag is written ONLY while holding the
+    // mutex that guards its container, so an adder cannot lose a concurrent clear;
+    // reads are lock-free and stay in shared cache state while nothing changes.
+    std::atomic<bool>                        _zombiesPending{false};
+    std::atomic<bool>                        _adoptionPending{false};
+
     std::mutex                               _zombieBlocksMutex;
     std::vector<std::shared_ptr<BlockModel>> _zombieBlocks;
 
@@ -919,6 +929,7 @@ protected:
             return;
         }
 
+        _adoptionPending.store(true, std::memory_order_release);
         auto runnerIndex = std::hash<BlockModel*>{}(newBlock.get()) % nBatches;
         _adoptionBlocks[runnerIndex].push_back(newBlock);
         switch (newBlock->state()) {
@@ -1162,6 +1173,9 @@ protected:
         if (localBlockList.empty()) {
             return;
         }
+        if (!_zombiesPending.load(std::memory_order_acquire)) {
+            return; // steady state: no zombies, so do not touch the shared lock
+        }
 
         std::lock_guard guard(_zombieBlocksMutex);
 
@@ -1219,9 +1233,14 @@ protected:
                 ++it;
             }
         }
+
+        _zombiesPending.store(!_zombieBlocks.empty(), std::memory_order_release);
     }
 
     void adoptBlocks(std::size_t runnerID, std::vector<std::shared_ptr<BlockModel>>& localBlockList) {
+        if (!_adoptionPending.load(std::memory_order_acquire)) {
+            return; // steady state: nothing to adopt, so do not touch the shared lock
+        }
         std::lock_guard guard(_adoptionBlocksMutex);
 
         if (runnerID >= _adoptionBlocks.size()) {
@@ -1232,6 +1251,8 @@ protected:
         localBlockList.reserve(localBlockList.size() + newBlocks.size());
         localBlockList.insert(localBlockList.end(), newBlocks.begin(), newBlocks.end());
         newBlocks.clear();
+
+        _adoptionPending.store(std::ranges::any_of(_adoptionBlocks, [](const auto& list) { return !list.empty(); }), std::memory_order_release);
     }
 
     /*
@@ -1263,6 +1284,7 @@ protected:
 
         std::lock_guard guard(_zombieBlocksMutex);
         _zombieBlocks.push_back(std::move(block));
+        _zombiesPending.store(true, std::memory_order_release);
     }
 
     // Moves all blocks into the zombie list
@@ -1292,6 +1314,7 @@ protected:
             }
 
             _zombieBlocks.push_back(std::move(block));
+            _zombiesPending.store(true, std::memory_order_release);
         }
 
         this->_graph->clear();
@@ -1476,6 +1499,7 @@ struct Simple : SchedulerBase<Simple<execution, TProfiler>, execution, TProfiler
         std::lock_guard guard(this->_adoptionBlocksMutex);
         this->_adoptionBlocks.clear();
         this->_adoptionBlocks.resize(n_batches);
+        this->_adoptionPending.store(false, std::memory_order_release);
         this->_executionOrder->clear();
         this->_executionOrder->reserve(n_batches);
         for (std::size_t i = 0; i < n_batches; i++) {
@@ -1585,6 +1609,7 @@ detecting cycles and blocks which can be reached from several source blocks.)"">
         std::lock_guard guard(this->_adoptionBlocksMutex);
         this->_adoptionBlocks.clear();
         this->_adoptionBlocks.resize(n_batches);
+        this->_adoptionPending.store(false, std::memory_order_release);
         *this->_executionOrder = detail::batchBlocks(blockList, n_batches);
     }
 
@@ -1651,6 +1676,7 @@ struct DepthFirst : SchedulerBase<DepthFirst<execution, TProfiler>, execution, T
         std::lock_guard guard(this->_adoptionBlocksMutex);
         this->_adoptionBlocks.clear();
         this->_adoptionBlocks.resize(n_batches);
+        this->_adoptionPending.store(false, std::memory_order_release);
         *this->_executionOrder = detail::batchBlocks(blockList, n_batches);
     }
 

@@ -1092,3 +1092,85 @@ meaningful as a **repeated, relative** comparison under otherwise-identical cond
 change moved B_max from 6 to 9 across five runs" is a result, "the scheduler supports 7 chains" is
 not. A single trial proves nothing. This is also why `SoapySource` no longer stops on overflow: if
 the cause cannot be attributed, acting decisively on it is worse than recording it and continuing.
+
+### 8.3 NEGATIVE RESULT — the scheduler's per-iteration global mutex is not the ingest cap
+
+Profiling a 3-radio run (`sample`, 6 s) found the contended-mutex path
+(`_pthread_mutex_firstfit_lock_slow` 96 samples, `psynch_mutexwait` 87) sitting **entirely in
+gr4's own scheduler** — `poolWorker` 45, `adoptBlocks` 23, `cleanupZombieBlocks` 22,
+`processScheduledMessages` 27 — and **nothing in the radio, SoapyUHD or USB path at all.**
+
+The mechanism is real: `poolWorker` calls `cleanupZombieBlocks()` and `adoptBlocks()` on **every
+iteration** (`Scheduler.hpp:748-750`), and each takes a **global** mutex to inspect a container
+that is empty in steady state. N workers therefore serialise on one lock. It does not show in the
+synthetic benchmark because each pass there moves a large chunk, amortising the lock; a
+rate-limited radio makes workers pass constantly while doing little, so acquisitions per unit of
+work explode.
+
+Fixed with a lock-free fast path: two atomics (`_zombiesPending`, `_adoptionPending`), each written
+**only while holding the mutex that guards its container**, so an adder cannot lose a concurrent
+clear and a stale read costs at most one extra iteration of latency.
+
+**It did not lift the cap.** 3 radios at 43 MS/s: 43.83 → 38.48 MS/s aggregate, i.e. unchanged
+within noise. Synthetic: 2416 → 2428 Msps at 16 threads, 1754 → 1806 at 8 — marginally positive
+but **not above the noise floor**, so it is not claimed as a win.
+
+**Conclusion: the mutex contention was a symptom, not the cause** — workers spinning with nothing
+to do were *hitting* the lock, rather than the lock gating ingest. The ~40-44 MS/s aggregate cap
+remains unlocalised, and the profile has now **excluded gr4's scheduler as its source**, which is
+the useful part of a negative result.
+
+Still to test, in order: a serialising lock inside UHD/SoapyUHD (the profile above covers gr4's own
+frames; a lock held *inside* the UHD library would appear differently); `DeviceRegistry`; the
+IO-pool thread count during a 3-radio run; per-read overhead at the fixed 8192-sample
+`max_chunk_size`.
+
+### 8.4 Timed start — the machinery exists, one setting is missing
+
+Standard multi-radio practice is to arm every radio with a start time of about -1.0 s and let them
+all latch the next 1-second boundary, after which they stay in lock. That needs three things, and
+we have two:
+
+- `clock_source`/`time_source` — **exposed** (`SoapySource.hpp:48,60`), currently unset.
+- `activate(int flags, long long timeNs, std::size_t numElems)` — **already in the wrapper**
+  (`SoapyRaiiWrapper.hpp:750`), and `setHardwareTime(long long)` at `:486`.
+- A `start_time` setting on the block — **missing**. `SoapySource::start()` calls `activate()` with
+  `timeNs = 0`, so no timed start is expressible today.
+
+`time_ns` is **signed 64-bit integer nanoseconds** end to end, with no narrowing in our path, so the
+negative-offset convention maps directly (-1.0 s → -1'000'000'000).
+
+**But integer nanoseconds is a systems-programmer's timestamp, not a radio one**, and it caps what
+this stack can ever express. UHD's own `time_spec_t` is integer full seconds **plus a `double`
+fractional second**, precisely because 1 ns is not enough resolution for radio work; SoapySDR
+quantises that to 1 ns and discards the rest. Resolution matters in metres, not clock ticks:
+
+| use | 1 ns granularity |
+|---|---|
+| timed start on a PPS boundary | **fine** — you are naming a second boundary; the 10 MHz reference and PPS do the disciplining in hardware |
+| sample alignment | **fine** — one sample at 61.44 MS/s is 16.3 ns, so 1 ns is sub-sample |
+| phase coherence (MIMO, direction finding, beamforming) | **useless** — 1 ns ≈ 0.3 m ≈ **2.4 wavelengths at 2.4 GHz** |
+
+So the Soapy path is adequate for the synchronisation work queued here and is a hard ceiling on any
+future phase-coherent work, which would have to bypass Soapy for UHD directly or work in
+sample-clock ticks. Worth knowing before anyone designs against it.
+
+**And the host clock is not a nanosecond clock either.** Measured on this machine: `hw.tbfrequency`
+is **24 MHz → 41.7 ns per tick**, and `steady_clock` shows a smallest non-zero step of **41 ns**
+with a 42 ns median back-to-back read over 95 221 samples. The type says nanoseconds; the hardware
+delivers 42× coarser, and other arm64/amd64 platforms with a 3 MHz architected timer are coarser
+still (~333 ns). In propagation terms **41.7 ns ≈ 12.5 m**, about 100 wavelengths at 2.4 GHz.
+
+Two consequences:
+
+- **Never align radios using host time.** It is two orders of magnitude worse than the API
+  quantisation, which is itself useless for phase work. Alignment belongs to the 10 MHz reference
+  and PPS; host time should only ever *name* a second boundary.
+- `SoapySource`'s free-running mode emits "best-effort wall-clock timestamps on every chunk"
+  from `detail::wallClockNs()` (`system_clock::now()`). Those carry ~42 ns granularity at best and,
+  being `system_clock` rather than `steady_clock`, also step with NTP. Best-effort is the correct
+  description; they must not be read as sample-accurate.
+
+**Sequencing constraint:** the radios must be powered and booted, and their reference lock
+established, *before* parameters are applied — and that should be verified by reading the
+`ref_locked`/`gps_locked` sensors rather than by sleeping.
