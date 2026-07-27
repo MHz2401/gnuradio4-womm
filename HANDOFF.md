@@ -189,8 +189,12 @@ plausibly a deliberate safeguard for unattended CI runners, not an oversight. Tr
 ## 3. Current state — what works
 
 - Builds clean: 1850 targets, ~600 s at `-j16`, **0 errors, 0 compiler warnings**.
-- **ctest 101/102.** The one failure, `qa_SoapySource`, is environmental: it hardcodes
-  `{"device", "rtlsdr"}` (`:322`) with no skip guard and no RTL dongle is attached.
+- **ctest 101/102 (serial).** The one failure is `qa_SoapySource`'s "gain" test at `:172` — a
+  **real, diagnosed defect**: SoapyUHD reports `Supports AGC: YES` for the B210 but
+  `setAutomaticGainControl()` / `isAutomaticGainControl()` do not round-trip, and active gain reads
+  `nan`. Not skipped: the device is present and the assertion is sound. Its two *missing-device*
+  failures (rtlsdr, lime) now skip cleanly.
+- **Run ctest SERIALLY** (invariant I-11). Device tests are not parallel-safe.
 - Five upstream correctness fixes cherry-picked (watchdog leak, message-path deadlock,
   init-on-reset, CircularBuffer churn, RT-safe housekeeping) — provenance in `DRIFT.md` Category E.
 - One portability fix of ours: `gr::meta::shrinkIfSupported()` in `meta/…/meta/utils.hpp`

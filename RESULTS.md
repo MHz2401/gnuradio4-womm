@@ -736,3 +736,37 @@ condvar wakeup costs more than a 10 µs poll that is already spinning. Notifying
 did not recover it (6.50 s vs 6.48 s), so it is latency, not a lost wakeup. The trade — 47× less
 CPU for 19 % more wall on one short test — is overwhelmingly favourable, and the full suite got
 **2.6× faster**, so the effect does not generalise to real workloads.
+
+---
+
+## qa_SoapySource — skip guards added; one real defect remains
+
+**Two device tests had no availability guard** and hard-failed on any machine without the dongle
+(`rtlsdr` at `:322`, `lime` at `:355`). Both now skip cleanly, using the same idiom
+`qa_SoapyIntegration.cpp:433` already uses. **The RTL-SDR choice is deliberately preserved** — it
+is receive-only, so an unattended CI run cannot transmit; see `HANDOFF.md` RF safety.
+
+**One genuine defect found, and deliberately NOT skipped.** `qa_SoapySource.cpp:172` runs against
+a **present** B210:
+
+```
+SoapySDRUtil --probe="driver=uhd"  ->  Supports AGC: YES   (both RX channels)
+qa_SoapySource "gain" test         ->  FAILED, false == true
+    RX active gain: nan
+```
+
+The test does `setAutomaticGainControl(RX, 0, !autoGain)` then reads it back with
+`isAutomaticGainControl()` and expects the new value. It does not round-trip. **SoapyUHD reports a
+capability it does not implement** — the test's logic is correct and the driver's claim is not.
+Note also the reported active gain is `nan`.
+
+Skipping this would be green-washing: the device is present and the assertion is sound. It is
+reported as a failure with diagnosis.
+
+Net: `qa_SoapySource` goes from 2 failures plus 2 unconditional hardware dependencies, to
+**1 failure that is a real, diagnosed driver defect**. The full-suite count is unchanged at
+101/102, but the remaining failure is now an honest one rather than a missing dongle.
+
+**Consequence for the stability gate:** still unmet, but for a defensible reason. Options are to
+fix or work around the AGC round-trip in SoapyUHD (ours is a vendored, patchable snapshot), or to
+accept it in writing as an upstream driver defect.
