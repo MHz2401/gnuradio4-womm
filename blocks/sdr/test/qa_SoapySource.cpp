@@ -308,6 +308,17 @@ const boost::ut::suite<"Soapy Block API "> soapyBlockAPI = [] {
     };
 
     tag("rtlsdr") / "basic RTL soapy data generation test"_test = [&createWatchdog] {
+        // Skip when no RTL-SDR is attached, matching the idiom already used for LimeSDR in
+        // qa_SoapyIntegration.cpp:433. Without this the test hard-fails on any machine lacking
+        // the dongle, which is every machine that is not the maintainer's CI host.
+        //
+        // The RTL-SDR choice itself is sound and deliberately kept: it is a RECEIVE-ONLY device,
+        // so an unattended CI run cannot transmit. Do not "improve coverage" by substituting a
+        // transmit-capable radio here - see HANDOFF.md, RF TRANSMISSION SAFETY.
+        if (gr::blocks::sdr::soapy::Device::enumerate({{"driver", "rtlsdr"}}).empty()) {
+            std::println(stderr, "[SKIP] no RTL-SDR device found");
+            return;
+        }
         using namespace gr;
         using namespace gr::blocks::sdr;
         using namespace gr::testing;
@@ -350,6 +361,11 @@ const boost::ut::suite<"Soapy Block API "> soapyBlockAPI = [] {
     };
 
     tag("lime") / "basic Lime soapy data generation test"_test = [&createWatchdog] {
+        // Same missing-guard problem as the rtlsdr case above; see the note there.
+        if (gr::blocks::sdr::soapy::Device::enumerate({{"driver", "lime"}}).empty()) {
+            std::println(stderr, "[SKIP] no LimeSDR device found");
+            return;
+        }
         using namespace gr;
         using namespace gr::blocks::sdr;
         using namespace gr::testing;
