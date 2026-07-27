@@ -1230,3 +1230,43 @@ Two design requirements before this test means anything:
 
 Until both hold, **whether the ~40-44 MS/s cap is per-process or global remains open**, and with it
 whether the cause is a lock inside UHD/SoapyUHD or something in the driver or host.
+
+### 8.6 ★ THE INGEST CAP IS GLOBAL, NOT PER-PROCESS
+
+The decisive test, done properly this time. Three requirements had to be met before the numbers
+meant anything, and each one was learned by getting it wrong first:
+
+1. **A cross-process start barrier.** Staggered launches are unavoidable (see 2), but they put one
+   process's ~2.5 s B210 bring-up inside another's measurement window. Every process now announces
+   readiness and waits for all peers before measuring (`WOMM_BARRIER_DIR`, `WOMM_BARRIER_N`).
+2. **Serialised device acquisition, addressed by SERIAL and not by index.** UHD enumeration only
+   reports devices **not already claimed by another process**, so indices shift underfoot — a third
+   process asking for index 2 was told "only 1 device found". Enumerate once before anything is
+   claimed, then pass serials in (`WOMM_SERIAL`).
+3. **Equal thread budgets.** `womm_bmax` did not size its CPU pool, so each process took the
+   default `hardware_concurrency()` = 24. Three processes = **72 spinning workers on 24 cores**,
+   and multi-threaded workers never back off. That measured thread thrash, not the driver, and
+   produced a spectacular 3.54 MS/s aggregate. With `WOMM_THREADS=8` (24 total) it is a fair test.
+
+| configuration | aggregate |
+|---|---|
+| 1 radio, 1 process | 42.18 MS/s |
+| 3 radios, **one** process | 43.83 MS/s |
+| 3 radios, **three** processes, barrier-synchronised, 8 threads each | **40.89 MS/s** |
+
+**Separate processes do not raise the ceiling.** Each has its own UHD/SoapyUHD library instance and
+therefore its own library-level locks, so this **excludes a per-process lock** — in gr4, in
+SoapySDR, and in UHD — as the cause. Combined with the earlier exclusions (USB bandwidth: three
+separate XHCI controllers; gr4's scheduler: fixing its global per-iteration mutex changed nothing;
+block settings: worth 2 MS/s inside a 6 MS/s noise band), the bottleneck sits **below the process
+boundary**.
+
+Remaining candidates, now a much shorter list: the macOS kernel USB stack / `IOUSBHostDevice`
+layer, libusb's transfer handling, or a system-wide limit on aggregate isochronous/bulk throughput.
+None of these is a gr4 defect, which is itself the useful conclusion — **no amount of gr4 tuning
+will move this number.**
+
+**Side finding, and it is a real one for deployment:** gr4's default CPU pool is
+`hardware_concurrency()` per *process*. Any multi-process gr4 deployment therefore oversubscribes
+the machine by the process count, with workers that spin rather than back off. Three processes cost
+12x throughput here. A multi-process design must size pools explicitly.

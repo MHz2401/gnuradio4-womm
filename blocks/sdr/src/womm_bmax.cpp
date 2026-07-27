@@ -51,6 +51,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <print>
 #include <string>
 #include <thread>
@@ -60,6 +62,7 @@
 
 #include <gnuradio-4.0/Graph.hpp>
 #include <gnuradio-4.0/Scheduler.hpp>
+#include <gnuradio-4.0/thread/thread_pool.hpp>
 
 #include <gnuradio-4.0/math/Math.hpp>
 #include <gnuradio-4.0/sdr/SoapySource.hpp>
@@ -220,6 +223,28 @@ Trial runTrial(const std::vector<std::string>& serials, double rateHz, std::size
     }
     std::this_thread::sleep_for(std::chrono::duration<double>(kWarmupSec)); // settle past the rate ramp
 
+    // CROSS-PROCESS START BARRIER. Without this the separate-process test is
+    // meaningless: launches must be staggered (UHD discovery cannot handle
+    // concurrent enumeration), but a staggered launch puts one process's B210
+    // bring-up - FPGA load plus USB enumeration, ~2.5 s of heavy work - inside
+    // another process's measurement window. A process then reports 4 MS/s where it
+    // reports 42 alone, and that is its neighbour booting, not a throughput result.
+    // Announce readiness, wait for everyone, and only then start measuring.
+    if (const char* dir = std::getenv("WOMM_BARRIER_DIR"); dir != nullptr) {
+        const std::size_t expected = static_cast<std::size_t>(std::atol(std::getenv("WOMM_BARRIER_N") ? std::getenv("WOMM_BARRIER_N") : "1"));
+        const std::filesystem::path readyFile = std::filesystem::path(dir) / std::format("ready.{}", getpid());
+        { std::ofstream mark(readyFile); }
+
+        const auto barrierDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        const auto readyCount      = [&] { return static_cast<std::size_t>(std::ranges::count_if(std::filesystem::directory_iterator(dir), [](const auto& e) { return e.path().filename().string().starts_with("ready."); })); };
+        while (readyCount() < expected && std::chrono::steady_clock::now() < barrierDeadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        if (readyCount() < expected) {
+            std::println(stderr, "  BARRIER TIMEOUT: {} of {} processes ready - result is not comparable", readyCount(), expected);
+        }
+    }
+
     // Time the STREAMING interval only. Device bring-up and graph construction must
     // not dilute the rate - that error invalidated two earlier measurements here.
     std::vector<gr::Size_t> startCount(taps.size());
@@ -273,23 +298,37 @@ int main(int argc, char* argv[]) {
         std::println(stderr, "no uhd devices found");
         return 1;
     }
-    // WOMM_SERIAL_INDEX picks WHICH device, so N single-radio processes can each bind a
-    // different radio. That is the decisive test for where the aggregate cap lives: if
-    // three separate processes each reach the single-radio rate, the ceiling is
-    // per-process and therefore a lock inside the UHD/SoapyUHD library; if they still
-    // sum to ~44 MS/s, it is global and belongs to the driver or the host.
-    if (const char* env = std::getenv("WOMM_SERIAL_INDEX"); env) {
-        const std::size_t idx = static_cast<std::size_t>(std::atol(env));
-        if (idx >= serials.size()) {
-            std::println(stderr, "WOMM_SERIAL_INDEX={} but only {} device(s) found", idx, serials.size());
-            return 1;
-        }
-        serials = {serials[idx]};
+    // WOMM_SERIAL names the device EXPLICITLY, so N single-radio processes can each bind
+    // a different radio. It must be a serial and not an index: UHD enumeration only
+    // reports devices that are not already claimed by another process, so indices shift
+    // underfoot as peers start up - a third process asking for index 2 was told "only 1
+    // device found". Enumerate once, before anything is claimed, and pass serials in.
+    //
+    // This is the decisive test for where the aggregate cap lives: if separate processes
+    // each reach the single-radio rate, the ceiling is per-process and therefore a lock
+    // inside the UHD/SoapyUHD library; if they still sum to ~44 MS/s it is global, and
+    // belongs to the driver or the host.
+    if (const char* env = std::getenv("WOMM_SERIAL"); env) {
+        serials = {std::string(env)};
     } else if (nRadios > 0UZ && nRadios < serials.size()) {
         serials.resize(nRadios);
     }
 
-    alarm(static_cast<unsigned>(kWarmupSec + kMeasureSec) + 120U); // a spinning worker cannot defeat SIGALRM
+    // Must exceed bring-up + barrier wait + measurement, or a process that waits at the
+    // barrier is killed before it can report - which looks exactly like a failed run.
+    const unsigned barrierBudget = std::getenv("WOMM_BARRIER_DIR") ? 150U : 0U;
+    alarm(static_cast<unsigned>(kWarmupSec + kMeasureSec) + 120U + barrierBudget); // a spinning worker cannot defeat SIGALRM
+
+    // WOMM_THREADS sizes this process's CPU pool. It matters enormously for any
+    // multi-PROCESS test: the default pool is hardware_concurrency() (24 here), so
+    // three processes claim 72 spinning workers on 24 cores. Multi-threaded workers
+    // never back off, so that is 3x oversubscription of pure spin - which measures
+    // thread thrash, not the driver.
+    if (const char* env = std::getenv("WOMM_THREADS"); env) {
+        const auto n = static_cast<std::uint32_t>(std::atol(env));
+        using namespace gr::thread_pool;
+        Manager::instance().replacePool(std::string(kDefaultCpuPoolId), std::make_shared<ThreadPoolWrapper>(std::make_unique<BasicThreadPool>(std::string(kDefaultCpuPoolId), TaskType::CPU_BOUND, n, n), "CPU"));
+    }
 
     std::println("womm B_max — {} radio(s) + {} ballast chain(s), one graph, one scheduler", serials.size(), nBallast);
     std::println("RECEIVE ONLY. {:.1f} MS/s/radio, centre {:.1f} MHz, gain {:.0f} dB, antenna {}", rateHz / 1e6, kCentreFreqHz / 1e6, kRxGainDb, antenna);
