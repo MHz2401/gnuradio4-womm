@@ -436,10 +436,13 @@ turned out to be the buffer, see `DRIFT.md` Category G and `RESULTS.md` §6.
    out of the scheduler (`SoapySource.hpp:785`, surfaced at `Scheduler.hpp:486`). The watchdog
    rework covers a wedged graph, not a throw. Needed **before** `B_max`, which deliberately
    bisects past the overflow threshold.
-4. **Verify the single-channel B210 ceiling.** Owner's hypothesis: the recorded 32.5 MS/s may be
-   the 2×2 figure and 1×1 should reach ~61.44. Evidence so far leans *against* it — at 32 MS/s the
-   link carries only ~128 MB/s against USB 3's practical ~400 MB/s, so **bandwidth is not the
-   limiter**, which points at per-read overhead on the fixed 8192-sample reads. Unproven either way.
+4. ~~Verify the single-channel B210 ceiling~~ **DONE — the 32.5 MS/s ceiling was wrong.**
+   Single-FE sustains **~43 MS/s** (44 requested, 43.28 achieved, ratio 0.984). The old figure was
+   an artefact of the sweep's rate list `{1,4,8,16,32,56}`, which never bracketed anything between
+   32 and 56. Mechanism, per the owner: an **LO / front-end sync** constraint, per radio — two FEs
+   is what caps a B2xx near 32; **nothing to do with USB bandwidth**. Anything above ~40 MS/s is a
+   marginal band (50 → 0.971 BEHIND; 40 failed once while 44 passed, non-monotonic, so stochastic
+   rather than a limit). See `RESULTS.md` §7.1.
 5. **Serialise device tests** — ctest `RESOURCE_LOCK` or a fixture; upstream-shaped, no patch.
 6. Deferred: default pool size is `hardware_concurrency()` = 24 on this machine, which puts 8
    workers on utility cores; 16 threads measured faster than 24. `PORTABILITY.md`.

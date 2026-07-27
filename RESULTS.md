@@ -970,3 +970,64 @@ not: a tag ring holds only tags still *in flight*, never a slot per sample. Adop
 
 That closes the item §4.3's withdrawn "leak" turned out to actually be — **a 3× memory cut for one
 line, found by reading upstream rather than by inventing a fix.** New invariant I-14.
+
+---
+
+## Phase 7 — two corrections from the owner's review
+
+### 7.1 The B210 "32.5 MS/s ceiling" was an artefact of the sweep's rate list
+
+The owner corrected the mechanism first: the B210's rate limit is a **local-oscillator / front-end
+sync constraint, per radio** — the LO must hold ~1e9:1 frequency resolution in sync with digital
+sampling, and syncing *two* front-ends simultaneously is what caps a B2xx near 32 MS/s against a
+56 MS/s max clock. **It has nothing to do with USB bandwidth**, so the earlier "per-read overhead on
+8192-sample reads" inference was wrong too.
+
+That prompted the obvious check nobody had run. The old sweep used rates `{1, 4, 8, 16, 32, 56}`,
+so **32 was simply the highest passing entry in a list that skipped everything between 32 and 56.**
+The ceiling was never bracketed. Measured, `num_channels=1`, depth 8:
+
+| requested | achieved | ratio | verdict |
+|---|---|---|---|
+| 32 MS/s | 31.93 | 0.998 | KEEPS UP |
+| 40 MS/s | — | — | OVERFLOW (see below) |
+| 44 MS/s | **43.28** | 0.984 | KEEPS UP |
+| 50 MS/s | 48.57 | 0.971 | BEHIND |
+| 56 MS/s | — | — | OVERFLOW |
+
+**Single-front-end sustained rate is ~43 MS/s, not 32.5** — a third higher than recorded, and
+consistent with the owner's LO explanation that 32 is the two-FE figure.
+
+The 40 MS/s failure is **non-monotonic** and therefore not a capability limit. UHD negotiated the
+exact requested master clock in both cases (40.0 and 44.0 MHz, decimation 1), so it is not an
+MCR/decimation artefact either. With 44 at 0.984 and 50 at 0.971, everything from ~40 up sits in a
+marginal band where accumulating 10 overflows inside an 8 s window is stochastic. Treat ~43 MS/s as
+the sustained figure and anything above ~40 as marginal.
+
+### 7.2 The tag-ring cap is a symptom fix — fair-acc redesigned Tag itself
+
+The owner flagged the 64:1 tag-to-stream ratio as a "4-5 orders-of-magnitude WTF" worth checking
+against the *intended* design rather than patching. That was right, and the check found more than
+the cap.
+
+The ratio is **three compounding factors**, of which the cap addresses one:
+
+| factor | ours | fair-acc |
+|---|---|---|
+| ring length | one slot per sample (65536) | capped at 4096 — **adopted** |
+| slot size | `alignas(kCacheLine)` → **128 B/tag** | no alignas, `index + ValueMapView` ≈ 32 B |
+| copyability | `property_map` member → **not** trivially copyable → tag rings take the copying path (2× allocation + a mirror copy per publish) | `static_assert(is_trivially_copyable_v<Tag>)` → double-mapped, no copy |
+
+fair-acc `a944ddc` — *"non-owning Tag + generic ChunkBuffer<T> tag buffer"* — fixes the **root**:
+one trivially-copyable `Tag` whose variable-size payload lives in a separate chunk pool, explicitly
+so "tags move by value through device/USM paths". No wire-format change. Combined that is ~128×
+smaller than our original, which matches the owner's order-of-magnitude read far better than the
+16× cap alone.
+
+**Consequence for us:** our tag rings still pay a mirror copy on every tag publish, because our
+`Tag` is still non-trivially-copyable. The cap is consistent with fair-acc's direction and not
+contradicted by it, but it is not the design correction.
+
+**Open decision (tier 2/3):** adopting the non-owning Tag is a large change — `Tag`, `ValueMap`,
+`ChunkBuffer`, every block that reads tags, and the test suite — and it is LGPL-licensed, so it
+lands in `DRIFT.md` Category E rather than being ours. Not taken unilaterally.
