@@ -66,6 +66,29 @@ Evidence for every one of these is in `BUILD_JOURNAL.md` (decisions D1–D7) and
 | I-9 | **fair-acc is NOT a tracking target** | it reverted macOS ARM64 support (`ac59533`). Cherry-pick individual fixes only |
 | I-10 | **gr4 source drift must stay small** and every change logged in `DRIFT.md` | forward-compat is a stated objective; currently 14 files |
 
+### ⚠ RF TRANSMISSION SAFETY — read before any hardware test
+
+The owner holds an amateur radio licence. **Claude does not, and cannot transmit on his behalf
+without his knowledge.**
+
+- **PRE-NOTIFY the owner of the exact frequency, bandwidth, gain and duty cycle of ANY test that
+  could key a transmitter, and wait for explicit approval.** Not "SDR testing" — the actual
+  numbers and the band they fall in.
+- **Default to RX-only.** A B210 and a HackRF both transmit. Configure test graphs so TX is
+  impossible by construction (no `SoapySink`, no TX antenna selected), not merely unused.
+- **Never widen frequency range, sweep gain, or enable TX to "improve coverage"** without the
+  owner deciding, band by band. Automating an emission does not make it legal, and a licensed
+  operator carries the consequences.
+- **Bands are not interchangeable.** GPS, aeronautical, emergency and public-safety allocations
+  are near-instantly attributable and can be catastrophic to jam. Being near an airport makes
+  this concrete rather than theoretical.
+- **Do not commit RF parameters** (frequency, gain, antenna, TX enable) to any file that could
+  reach a public repository. Keep them in a gitignored local config. A committed test that another
+  contributor edits becomes someone else's emission, on someone else's licence.
+
+This is why upstream's `qa_SoapySource` hardcodes an **RTL-SDR: it is receive-only.** That is
+plausibly a deliberate safeguard for unattended CI runners, not an oversight. Treat it as one.
+
 ### Rules that bind (from the owner's original brief)
 
 - **No green-washing.** Never disable a test, add `|| true`, blanket `-Wno-error`, or narrow the
