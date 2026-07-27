@@ -846,16 +846,39 @@ the skeptical reading. Neither is worth pursuing until something else dominates.
 
 ### 6.4 Results — windowed steady state, correct data
 
+Final, all five defects fixed, quiet machine, 5 s windows:
+
 | cell | before | after | gain |
 |---|---|---|---|
-| 1 chain, 1 thread | 291 | **454** | 1.56× |
-| 16 chains, 1 thread | 231 | **322** | 1.39× |
-| 16 chains, 8 threads | 789 | **1319** | 1.67× |
-| 16 chains, 16 threads | 985 | **2390** | **2.43×** |
+| 1 chain, 1 thread | 291 | **476** | 1.64× |
+| 16 chains, 1 thread | 231 | **350** | 1.52× |
+| 16 chains, 8 threads | 789 | **1754** | 2.22× |
+| 16 chains, 16 threads | 985 | **2416** | **2.45×** |
 
-Peak **16× → 38.9× a B210**. 16-thread scaling **4.16× → 7.42×**: the copy is memory-bandwidth
+Peak **16× → 39.3× a B210**. 16-thread scaling **4.16× → 6.90×**: the copy is memory-bandwidth
 bound, so cores contended for it and it flattened the curve rather than merely taxing each core.
 Within 3 % of a mirror-elision probe, confirming the copy was the entire cost.
+
+**Hardware, after all five fixes** — full sweep, one B210, RX-only, 2401 MHz, 20 dB:
+
+| rate | verdict |
+|---|---|
+| 1, 4, 8, 16 MS/s | KEEPS UP, ratio 1.000 |
+| 32 MS/s | KEEPS UP, 31.93 achieved |
+| 56 MS/s | OVERFLOW |
+
+Ceiling ~32 MS/s, matching the previously recorded 32.50 — **no regression and no improvement**,
+which is the expected result: that ceiling is USB/UHD/`ioReadLoop`, not the DSP layer, and the DSP
+layer now has ~75× the headroom the radio needs.
+
+Note against the "is 32.5 the 2×2 figure?" question: at 32 MS/s × 4 B (sc16) this is only
+~128 MB/s, far below USB 3's practical ~400 MB/s. **Bandwidth is not the limiter**, so the ceiling
+is more consistent with per-read overhead on the fixed 8192-sample reads than with channel count.
+Still open.
+
+**Also still open:** the 56 MS/s point dies on an *uncaught* exception propagating out of the
+scheduler. The watchdog rework covers a wedged graph, not this; a rate sweep should degrade to a
+recorded FAILED row rather than terminating the process.
 
 Serial `ctest` **101/102 on three consecutive runs** (152.6 / 152.4 / 142.3 s); the single failure
 is the known pre-existing `qa_SoapySource` out-of-range gain.

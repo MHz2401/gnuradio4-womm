@@ -237,12 +237,12 @@ Current, windowed steady state, `--chains`/`--threads` independent, one cell per
 
 | chains | threads | Msps | ×B210 |
 |---|---|---|---|
-| 1 | 1 | 454 | 7.4× |
-| 16 | 8 | 1319 | 21.5× |
-| 16 | 16 | **2390** | **38.9×** |
+| 1 | 1 | 476 | 7.8× |
+| 16 | 8 | 1754 | 28.5× |
+| 16 | 16 | **2416** | **39.3×** |
 
-One chain on one core sustains **7.4× a B210** through eight multiply/divide stages; the machine
-peaks near **2390 Msps**. 16-thread scaling is **7.42×** — still sublinear, but the dominant term
+One chain on one core sustains **7.8× a B210** through eight multiply/divide stages; the machine
+peaks near **2416 Msps**. 16-thread scaling is **6.90×** — still sublinear, but the dominant term
 was the buffer mirror copy, not the scheduler. Harness: `core/benchmarks/womm_bm_scaling.cpp`,
 one cell per invocation (`--chains N --threads M --window SEC`).
 
@@ -429,7 +429,7 @@ turned out to be the buffer, see `DRIFT.md` Category G and `RESULTS.md` §6.
    This is the whole of the ~6.9 GiB-per-graph footprint. Decouple the two.
 2. **`B_max` hardware harness (tier 1).** N radio chains + M synthetic ballast chains in ONE graph
    and scheduler; `B_max` = the largest M with zero overflows for T seconds. Radios alone cannot
-   load this machine (3 × ~32 MS/s against 2390 Msps), so they serve as a *deadline probe*. A
+   load this machine (3 × ~32 MS/s against 2416 Msps), so they serve as a *deadline probe*. A
    threshold resolvable by bisection beats a noisy Msps figure. RX-only by construction — the TU
    must not include `SoapySink`, and the `nm -C` gate on the linked binary is the check.
 3. **Verify the single-channel B210 ceiling.** The recorded 32.5 MS/s may be the 2×2 figure; 1×1
