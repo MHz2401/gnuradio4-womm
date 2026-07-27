@@ -57,6 +57,7 @@ tomorrow's dependency and vice versa. Do not treat any tier as finished early.
 
 | Tier | Scope | Contents |
 |---|---|---|
+| **0** | **the work exists and is backed up** — outranks everything, including tier 1 | commits pushed to `origin`; nothing of value living only on this machine |
 | **1** | **radio running** — performance while a device streams | thread QoS; scaling plateau; anything that costs throughput with hardware live |
 | **2** | radio off | graph-lifecycle memory; config-time costs; UI/reconfiguration paths |
 | **3+** | everything else | upstream contribution, public-repo polish |
@@ -71,6 +72,20 @@ with a working local system, and premature contribution locks in an incomplete p
 judged against the linear-proportionality criterion above.
 
 **Making things work at capacity outranks formal QA for a public repo.**
+
+### Tier 0 in practice — when to push
+
+Losing work costs more than any tier-1 result is worth. Push:
+
+- **at every gate / milestone** — and always before ending a session;
+- **after anything expensive to recreate** — a 10-minute build, a measurement run, a diagnosis
+  that took several experiments;
+- **before anything risky** — rebase, reset, upstream fetch/merge, or a large refactor;
+- **whenever more than a few commits have accumulated.** If in doubt, push.
+
+Cheap and reversible; the failure mode it prevents is not. Licensing of *this fork* is tier 3 —
+the owner renamed it `gnuradio4-womm` deliberately, and final licensing is sorted out later. **Do
+not let a licensing question block a backup push.**
 
 ---
 
@@ -180,7 +195,13 @@ plausibly a deliberate safeguard for unattended CI runners, not an oversight. Tr
   test set to make things pass. A diagnosed failure is a result; a hidden one is a lie.
 - **No network fetch** without explicit approval. Source only from hosts with active third-party
   malware monitoring (this ruled out a self-hosted gitea mid-session).
-- **Never push. Never touch `main`.** Commit often on the working branch.
+- **PUSH REGULARLY to `origin`.** An earlier session read "never push" as absolute and left 35
+  commits existing only on this machine for two days. That was wrong. The rule means **no pull
+  requests to upstream** (`gnuradio/gnuradio4`, `fair-acc/gnuradio4`) — it never meant "do not back
+  up your own work". See tier 0 below.
+  - **Do:** `git push -u origin <our-branch>` — our branches, our fork.
+  - **Never:** push `main`; force-push; push to `upstream-gr`/`upstream-fair` (fetch-only); open a
+    PR upstream.
 - **Ask before the first command that touches hardware** in a new session.
 - **Report regressions as prominently as wins.** Label anything not actually measured.
 
