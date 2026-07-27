@@ -852,13 +852,20 @@ public:
         if constexpr (kIsInput) {
             return {};
         } else {
+            // A caller means "no override" either by passing nullptr or by passing the
+            // default resource - Graph::connect does the latter for every host-domain
+            // edge (Graph.hpp:695). Treating that as an override silently bypassed
+            // BufferType's own DefaultAllocator, so the double-mapped ring was dead
+            // code for every connected port and each publish paid a mirror memcpy.
+            const auto isOverride = [](const std::pmr::memory_resource* resource) { return resource != nullptr && resource != std::pmr::get_default_resource(); };
+
             try {
-                if (dataResource) {
+                if (isOverride(dataResource)) {
                     _ioHandler = BufferType(min_size, std::pmr::polymorphic_allocator<typename BufferType::value_type>(dataResource)).new_writer();
                 } else {
                     _ioHandler = BufferType(min_size).new_writer();
                 }
-                if (tagResource) {
+                if (isOverride(tagResource)) {
                     _tagIoHandler = TagBufferType(min_size, std::pmr::polymorphic_allocator<typename TagBufferType::value_type>(tagResource)).new_writer();
                 } else {
                     _tagIoHandler = TagBufferType(min_size).new_writer();

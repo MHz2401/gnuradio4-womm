@@ -1186,8 +1186,17 @@ const boost::ut::suite<"non power of two"> _nonPo2 = [] {
 
         auto buffer = TestBuffer(1024); // Should remain power of 2
 
-        expect(eq(buffer.size(), 1024UZ));
+        // A double-mapped ring cannot be smaller than one page, so the element floor
+        // is page_size/sizeof(T): exactly 1024 on 4 KiB pages, 4096 on the 16 KiB
+        // pages of Apple silicon. Asserting == 1024 therefore encoded a 4 KiB page
+        // size rather than the property this test is named for. What the mask fast
+        // path actually requires is that the size stays a power of two and is never
+        // shrunk below the request, which holds on both.
+        expect(ge(buffer.size(), 1024UZ)) << "buffer must never be smaller than requested";
         expect(std::has_single_bit(buffer.size())) << "Power-of-2 sizes should be preserved for performance";
+        if (gr::has_posix_mmap_interface) {
+            expect(eq((buffer.size() * sizeof(int32_t)) % static_cast<std::size_t>(getpagesize()), 0UZ)) << "a double-mapped ring must be a whole number of pages";
+        }
 
         auto writer = buffer.new_writer();
         auto reader = buffer.new_reader();

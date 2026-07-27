@@ -35,7 +35,10 @@ using polymorphic_allocator = std::experimental::pmr::polymorphic_allocator<T>;
 #include <unistd.h>
 #endif
 
-#ifdef __NR_memfd_create
+// __NR_memfd_create is a Linux syscall number, so gating on it alone excluded every
+// other POSIX system that can double-map perfectly well. Darwin has no memfd_create
+// but does have POSIX shared memory, which is all this needs - see do_allocate_internal.
+#if defined(__NR_memfd_create) || defined(__APPLE__)
 namespace gr {
 static constexpr bool has_posix_mmap_interface = true;
 }
@@ -97,11 +100,26 @@ class double_mapped_memory_resource : public std::pmr::memory_resource {
         const std::size_t size_half = size / 2;
 
         static std::size_t _counter{0};
-        const auto         buffer_name  = std::format("/double_mapped_memory_resource-{}-{}-{}", getpid(), size, gr::AtomicRef<std::size_t>(_counter).fetch_add(1));
-        const auto         memfd_create = [name = buffer_name.c_str()](unsigned int flags) { return syscall(__NR_memfd_create, name, flags); };
-        auto               shm_fd       = static_cast<int>(memfd_create(0));
+        const std::size_t  instance_id = gr::AtomicRef<std::size_t>(_counter).fetch_add(1);
+
+#ifdef __APPLE__
+        // Darwin has no memfd_create. A POSIX shared-memory object unlinked immediately
+        // after creation is the exact equivalent: the descriptor keeps the object alive
+        // and nothing is left behind in the global namespace, even if we crash here.
+        // Names are capped at PSHMNAMLEN (31 incl. the leading slash), so this one is
+        // deliberately terse where the Linux name can afford to be descriptive.
+        const auto buffer_name = std::format("/gr4-{}-{}", getpid(), instance_id);
+        int        shm_fd      = shm_open(buffer_name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+        if (shm_fd >= 0) {
+            shm_unlink(buffer_name.c_str());
+        }
+#else
+        const auto buffer_name  = std::format("/double_mapped_memory_resource-{}-{}-{}", getpid(), size, instance_id);
+        const auto memfd_create = [name = buffer_name.c_str()](unsigned int flags) { return syscall(__NR_memfd_create, name, flags); };
+        int        shm_fd       = static_cast<int>(memfd_create(0));
+#endif
         if (shm_fd < 0) {
-            throw std::system_error(errno, std::system_category(), std::format("{} - memfd_create error {}: {}", buffer_name, errno, strerror(errno)));
+            throw std::system_error(errno, std::system_category(), std::format("{} - shared-memory create error {}: {}", buffer_name, errno, strerror(errno)));
         }
 
         if (ftruncate(shm_fd, static_cast<off_t>(size)) == -1) {
@@ -130,7 +148,16 @@ class double_mapped_memory_resource : public std::pmr::memory_resource {
         // where to place the mapping". The returned pointer therefore must equal second_copy_addr
         // for our contiguous mapping to work as intended.
         void* second_copy_addr = static_cast<char*>(first_copy) + size_half;
-        if (const void* result = mmap(second_copy_addr, size_half, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, static_cast<off_t>(0)); result != second_copy_addr) {
+#ifdef __APPLE__
+        // Darwin treats a bare address as advisory and will happily place the mapping
+        // elsewhere, which fails the equality check below every time. MAP_FIXED is safe
+        // here precisely because the hole was just munmap()ed above, so there is nothing
+        // for it to clobber. Left off on Linux, where the hint already works.
+        constexpr int kSecondMapFlags = MAP_SHARED | MAP_FIXED;
+#else
+        constexpr int kSecondMapFlags = MAP_SHARED;
+#endif
+        if (const void* result = mmap(second_copy_addr, size_half, PROT_READ | PROT_WRITE, kSecondMapFlags, shm_fd, static_cast<off_t>(0)); result != second_copy_addr) {
             std::error_code errorCode(errno, std::system_category());
             close(shm_fd);
             if (result == MAP_FAILED) {
