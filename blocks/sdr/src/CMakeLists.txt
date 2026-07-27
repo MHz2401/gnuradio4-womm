@@ -47,3 +47,26 @@ target_link_libraries(
           gr-sdr
           gr-math
           gr-testing)
+
+# womm: B_max - spare scheduler capacity while radios hold a hard deadline (see RESULTS.md)
+add_executable(womm_bmax womm_bmax.cpp)
+target_link_libraries(
+  womm_bmax
+  PRIVATE gnuradio-options
+          gnuradio-core
+          gnuradio-blocklib-core
+          gr-sdr
+          gr-math
+          gr-testing)
+
+# RECEIVE-ONLY GATE. The harness must be structurally incapable of transmitting, not
+# merely written so as not to. Assert on the LINKED BINARY that no SoapySink symbol
+# is present - a comment or a code review cannot make that guarantee, and a future
+# edit that pulls in a transmit path fails the build here rather than on the air.
+add_custom_command(
+  TARGET womm_bmax
+  POST_BUILD
+  COMMAND
+    ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_bmax> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
+  COMMENT "womm: verifying womm_bmax links no transmit path")

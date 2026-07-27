@@ -66,7 +66,7 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
 
     Annotated<std::uint32_t, "max_chunk_size", Doc<"max samples per read (ideally N x 512)">, Visible, TSizeChecker> max_chunk_size       = 512U << 4U;
     Annotated<std::uint32_t, "max_time_out_us", Unit<"us">, Doc<"SoapySDR polling timeout">>                         max_time_out_us      = 1'000;
-    Annotated<gr::Size_t, "max_overflow_count", Doc<"max consecutive overflows before stop (0 = never stop)">>           max_overflow_count   = 0U;
+    Annotated<gr::Size_t, "max_overflow_count", Doc<"max total overflows before stop (0 = never stop)">>                max_overflow_count   = 0U;
     Annotated<gr::Size_t, "max_fragment_count", Doc<"max consecutive fragments before stop (0 = disable)">>          max_fragment_count   = 100U;
     Annotated<bool, "verbose_overflow", Doc<"log each overflow event">>                                              verbose_overflow     = false;
     Annotated<std::string, "trigger_name", Doc<"tag trigger_name for free-running wallclock mode">>                  trigger_name         = std::string("SDR_WALLCLOCK");
@@ -84,8 +84,7 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     soapy::Device::Stream<T, SOAPY_SDR_RX> _rxStream{};
     soapy::Kwargs                          _devKwargs{};
     bool                                   _ioThreadDone = true;
-    std::atomic<gr::Size_t>                _overflowCount{0U}; // CONSECUTIVE; reset by any successful read
-    std::atomic<gr::Size_t>                _overflowTotal{0U}; // cumulative, diagnostics only
+    std::atomic<gr::Size_t>                _overflowCount{0U}; // MONOTONIC; cleared only by an application-space reset
     std::atomic<gr::Size_t>                _fragmentCount{0U};
     std::int64_t                           _clockOffsetNs    = 0;
     bool                                   _clockOffsetValid = false;
@@ -247,7 +246,6 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                 if (ret == 0) {
                     continue;
                 }
-                _overflowCount.store(0U, std::memory_order_relaxed); // a good read ends the run
 
                 handleStreamFlags(flags);
                 auto nSamples = static_cast<std::size_t>(ret);
@@ -318,7 +316,6 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                 if (ret == 0) {
                     continue;
                 }
-                _overflowCount.store(0U, std::memory_order_relaxed); // a good read ends the run
 
                 handleStreamFlags(flags);
                 auto nSamples = static_cast<std::size_t>(ret);
@@ -783,20 +780,24 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
             // metadata about the signal, not a host-side error: the device keeps
             // streaming and its overflow markers are timed so as not to disturb
             // sample sync. So count it, tag it, report it, and KEEP READING.
-            const gr::Size_t consecutive = _overflowCount.fetch_add(1U, std::memory_order_relaxed) + 1U;
-            _overflowTotal.fetch_add(1U, std::memory_order_relaxed);
+            // MONOTONIC. Cleared only by an application-space reset (reset()/start(),
+            // :164) - never silently by the driver. A driver that zeroed this on the
+            // next good read would leave an application unable to ask "how many
+            // overflows this hour?", only ever "how many in the current run", which
+            // is the driver's business rather than the application's.
+            const gr::Size_t total = _overflowCount.fetch_add(1U, std::memory_order_relaxed) + 1U;
 
             emitOverflowTag(); // the downstream-visible signal; always published
 
-            // Sparse when frequent, immediate when not: every occurrence while
-            // rare, then powers of two, so a sustained overrun costs O(log n) lines
-            // instead of one per read.
-            if (verbose_overflow && (consecutive <= 4U || std::has_single_bit(consecutive))) {
-                std::println(stderr, "[SoapySource] overflow, {} consecutive ({} total)", consecutive, _overflowTotal.load(std::memory_order_relaxed));
+            // Sparse when frequent, immediate when not: every occurrence while rare,
+            // then powers of two, so a sustained overrun costs O(log n) lines rather
+            // than one per read.
+            if (verbose_overflow && (total <= 4U || std::has_single_bit(total))) {
+                std::println(stderr, "[SoapySource] overflow #{}", total);
             }
 
-            if (max_overflow_count > 0 && consecutive >= max_overflow_count) {
-                this->emitErrorMessage("ioReadLoop()", std::format("OVERFLOW: {} consecutive of max {}", consecutive, max_overflow_count));
+            if (max_overflow_count > 0 && total >= max_overflow_count) {
+                this->emitErrorMessage("ioReadLoop()", std::format("OVERFLOW: {} of max {}", total, max_overflow_count));
                 this->requestStop();
                 return false;
             }

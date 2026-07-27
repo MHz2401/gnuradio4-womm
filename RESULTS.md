@@ -1031,3 +1031,64 @@ contradicted by it, but it is not the design correction.
 **Open decision (tier 2/3):** adopting the non-owning Tag is a large change — `Tag`, `ValueMap`,
 `ChunkBuffer`, every block that reads tags, and the test suite — and it is LGPL-licensed, so it
 lands in `DRIFT.md` Category E rather than being ours. Not taken unilaterally.
+
+---
+
+## Phase 8 — ⚠ TOTAL SDR INGEST CAPS AT ~40-44 MS/s, HOWEVER IT IS DIVIDED
+
+The tier-1 headline, and it is not the DSP layer.
+
+Harness: `blocks/sdr/src/womm_bmax.cpp` — N radios + M synthetic ballast chains in
+**one graph and one scheduler**. Receive-only by construction; the build asserts on the linked
+binary that no `SoapySink`/`writeStream`/`SOAPY_SDR_TX` symbol is present
+(`blocks/sdr/src/assert_no_tx.cmake`), because a comment cannot make that guarantee.
+
+| radios | requested each | aggregate achieved | verdict |
+|---|---|---|---|
+| 1 | 43 MS/s | **42.18** | PASS |
+| 2 | 43 MS/s | 38.71 | FAIL |
+| 3 | 43 MS/s | 43.83 | FAIL |
+| 3 | 16 MS/s | 41.54 | FAIL |
+| 3 | 12 MS/s | **35.85** | **PASS** |
+
+**The cap is on the aggregate, not per radio.** Three radios at 12 MS/s (36 total) sustain
+cleanly; three at 16 (48 total) do not. One radio alone reaches 42. Total ingest saturates around
+**40-44 MS/s no matter how it is divided** — against **2400 Msps** of DSP capacity measured in
+Phase 6, i.e. the radios can feed roughly **1/55th** of what this machine can process.
+
+**Ruled out:** USB bandwidth. The three B210s are on **separate XHCI controllers**
+(`AppleT8112USBXHCI@01/02/03`), and 44 MS/s x 4 B is ~176 MB/s against USB 3's practical ~400 MB/s
+*per controller*.
+
+**Not yet localised.** Candidates, in the order worth testing:
+1. A serialising lock in UHD or SoapyUHD — most likely, and cheap to test with `sample` during a
+   3-radio run.
+2. `DeviceRegistry` (`SoapyRaiiWrapper.hpp`) — distinct serials give distinct devices, but a shared
+   mutex on the registry path would still serialise.
+3. IO-pool behaviour. `ioReadLoop` is dispatched to `defaultIoPool()`
+   (`SoapySource.hpp:189`); the pool grows on demand to a very large `ioMax`, so this is unlikely,
+   but the thread count during a 3-radio run has not actually been counted.
+4. Per-read overhead: fixed 8192-sample reads (`max_chunk_size`) at ~5.4 k reads/s aggregate.
+
+### 8.1 What this measurement does NOT establish
+
+**Host capacity, not synchronisation.** Each B210 free-runs on its own clock, so three streams
+whose counts advance during the same *host* wall-clock window are three independent captures that
+merely overlap in our frame — not a coherent acquisition. Certainty needs every device on a common
+or GPS time source and a check that they report the same sample index at the same instant.
+
+The hardware here **can** do that: the B210s are on an **Octoclock-G** (10 MHz reference + PPS,
+GPS-disciplined), and the device reports `Clock sources: internal, external, gpsdo` /
+`Time sources: none, internal, external, gpsdo`. gr4 already exposes both as settings
+(`clock_source`, `time_source`, `reference_clock_rate` — `SoapySource.hpp:48,60,61`). The harness
+does **not** currently set them, so every figure above is free-running. Setting both to `external`
+is a two-setting change and turns the synchronisation question from a disclaimer into a test.
+
+### 8.2 And the overflow count is an indicator, not a measurement
+
+An overflow says samples were dropped; it does not say **by what**. USB, host scheduling, the
+device, the driver and our own ballast all produce the same indication. Therefore `B_max` is only
+meaningful as a **repeated, relative** comparison under otherwise-identical conditions — "this
+change moved B_max from 6 to 9 across five runs" is a result, "the scheduler supports 7 chains" is
+not. A single trial proves nothing. This is also why `SoapySource` no longer stops on overflow: if
+the cause cannot be attributed, acting decisively on it is worse than recording it and continuing.

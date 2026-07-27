@@ -427,7 +427,21 @@ turned out to be the buffer, see `DRIFT.md` Category G and `RESULTS.md` §6.
 
 1. ~~Tag-buffer sizing~~ **DONE.** Capped at `min(min_size, kDefaultBufferSize)`, matching
    fair-acc. Peak RSS **6.92 → 2.27 GiB**, throughput unchanged. See `DRIFT.md` G-6.
-2. **`B_max` hardware harness (tier 1).** N radio chains + M synthetic ballast chains in ONE graph
+1b. **★ THE TIER-1 BOTTLENECK IS NOW SDR INGEST, NOT DSP.** Total ingest saturates at
+   **~40-44 MS/s however it is divided** — 1 radio at 43 passes, 3 at 12 (36 total) pass, 3 at 16
+   (48 total) fail. Against 2400 Msps of DSP that is ~1/55th of the machine. **Not USB** (three
+   separate XHCI controllers). Not yet localised: suspect a serialising lock in UHD/SoapyUHD, then
+   `DeviceRegistry`, then IO-pool thread count, then per-read overhead on fixed 8192-sample reads.
+   Start with `sample` on a 3-radio run. See `RESULTS.md` §8.
+
+1c. **Set `clock_source`/`time_source` to `external`.** The B210s are on an **Octoclock-G**
+   (10 MHz + PPS, GPS-disciplined) and the device advertises `external` and `gpsdo` for both, but
+   the harness leaves them unset — so every multi-radio figure so far is **free-running**, and
+   nothing measured says anything about inter-radio time alignment. Two settings, already exposed
+   at `SoapySource.hpp:48,60`.
+
+2. **`B_max` hardware harness (tier 1)** — built, `blocks/sdr/src/womm_bmax.cpp`; still needs the
+   ballast sweep. N radio chains + M synthetic ballast chains in ONE graph
    and scheduler; `B_max` = the largest M with zero overflows for T seconds. Radios alone cannot
    load this machine (3 × ~32 MS/s against 2416 Msps), so they serve as a *deadline probe*. A
    threshold resolvable by bisection beats a noisy Msps figure. RX-only by construction — the TU
