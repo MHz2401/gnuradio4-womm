@@ -228,16 +228,23 @@ plausibly a deliberate safeguard for unattended CI runners, not an oversight. Tr
 
 ### Performance, measured
 
-Steady state, 20 M samples/chain, median + spread over 7 runs:
+**⚠ The whole earlier curve is retracted.** It sized the pool to the chain count, so every point
+varied workload *and* decomposition together, and its 1-chain point was a different regime (one job,
+topological order, no cross-thread edge). "1→2 chains gains nothing" was an **artefact of the axes**.
+The 168.8 Msps single-chain figure was also still setup-diluted at 20 M samples/chain.
 
-| chains | Msps | ×B210 rate |
-|---|---|---|
-| 1 | 168.8 | 2.75× |
-| 16 | 348.8 | 5.68× |
+Current, windowed steady state, `--chains`/`--threads` independent, one cell per process:
 
-A single chain sustains **2.75× a B210's full rate** through eight multiply/divide stages.
-Parallel scaling is poor — 16 chains give only **2.07×**, and 1→2 gains nothing — but absolute
-capability is comfortable. Harness: `core/benchmarks/womm_bm_scaling.cpp`.
+| chains | threads | Msps | ×B210 |
+|---|---|---|---|
+| 1 | 1 | 454 | 7.4× |
+| 16 | 8 | 1319 | 21.5× |
+| 16 | 16 | **2390** | **38.9×** |
+
+One chain on one core sustains **7.4× a B210** through eight multiply/divide stages; the machine
+peaks near **2390 Msps**. 16-thread scaling is **7.42×** — still sublinear, but the dominant term
+was the buffer mirror copy, not the scheduler. Harness: `core/benchmarks/womm_bm_scaling.cpp`,
+one cell per invocation (`--chains N --threads M --window SEC`).
 
 ---
 
@@ -325,11 +332,21 @@ proven, since §0 was measured on GNU Radio 3.x.
 
 Experiment reverted; `thread_pool.hpp` is byte-identical to upstream.
 
-### 4.3 Graph lifecycle leaks memory
+### 4.3 ~~Graph lifecycle leaks memory~~ — WITHDRAWN. There is no leak.
 
-Seven graph builds → **8 GiB peak RSS** and **1.7 M page reclaims** against ~64 MB of live sample
-data. Buffers are not released between graph lifecycles. Fixed cost per build, not per sample.
-This dominates any build-run-teardown cycle. Not yet diagnosed.
+Measured directly: a **single** 16-chain graph cycle peaks at **6.92 GiB**. The recorded 8 GiB
+across *seven* cycles is therefore consistent with memory being released every cycle — a leak would
+have shown ~42 GiB. The evidence was already in the old table and went unread: page reclaims were
+1,710,937 at 1 M samples/chain and 1,764,674 at 20 M — **flat**, i.e. a fixed allocation cost.
+
+**The real cause is static over-allocation, dominated by one line.** `Port::resizeBuffer` passes the
+**same element count** to the stream and the tag buffer, and `Tag` is `alignas(kCacheLine)` = **128 B
+on Apple ARM64**. A connected `float` port at 65536 gets 256 KiB of stream and **16 MiB of tags** —
+64×, and 4× worse than the same graph on Linux/x86-64. `Tag` is not trivially copyable, so tag
+buffers stay on the copying path and were untouched by the Category G buffer fix.
+
+**Open, tier 2:** decouple tag-buffer sizing from stream-buffer sizing. Nothing here needs 65536
+tags in flight per port. See `RESULTS.md` §6.6.
 
 ### 4.4 Deferred, in priority order
 
@@ -402,11 +419,26 @@ USB/UHD/`ioReadLoop`.
 - **I-13: the test suite is not deterministic.** `qa_BasicFileIo` varies 8.8 s → 48 s → timeout on
   identical code. The 5-clean-run stability gate is currently unmeetable.
 
-### 7.3 Next-step ordering
-1. **DONE — root cause found, see §4.2.** Remaining: implement the shared-mutex condvar fix and
-   re-measure everything (scaling curve, B210 sweep, stability runs) against it.
-2. **Serialise device tests** — ctest `RESOURCE_LOCK` or a fixture; upstream-shaped, no patch.
-3. **Push the radio ceiling** if higher rates are wanted: USB/UHD/`ioReadLoop` (fixed 8192-sample
-   reads), *not* the DSP layer.
-4. Deferred: graph-lifecycle memory (8 GiB / 1.7 M page reclaims per 7 builds), parallel scaling
-   (2.07× from 16 chains), `PORTABILITY.md`.
+### 7.3 Next-step ordering — REWRITTEN 2026-07-27, the old list is done or void
+
+Items 1 (condvar fix) and 4's scaling entry are complete; §4.2's fix landed and the scaling plateau
+turned out to be the buffer, see `DRIFT.md` Category G and `RESULTS.md` §6.
+
+1. **Tag-buffer sizing (tier 2, cheap, large).** `Port::resizeBuffer` gives the tag buffer the same
+   *element* count as the stream buffer; at `sizeof(Tag) == 128` that is 16 MiB per connected port.
+   This is the whole of the ~6.9 GiB-per-graph footprint. Decouple the two.
+2. **`B_max` hardware harness (tier 1).** N radio chains + M synthetic ballast chains in ONE graph
+   and scheduler; `B_max` = the largest M with zero overflows for T seconds. Radios alone cannot
+   load this machine (3 × ~32 MS/s against 2390 Msps), so they serve as a *deadline probe*. A
+   threshold resolvable by bisection beats a noisy Msps figure. RX-only by construction — the TU
+   must not include `SoapySink`, and the `nm -C` gate on the linked binary is the check.
+3. **Verify the single-channel B210 ceiling.** The recorded 32.5 MS/s may be the 2×2 figure; 1×1
+   should reach ~61.44 MS/s. If so the "ceiling" is a configuration artefact, not a transport limit,
+   and every `B_max` figure anchored to it is anchored wrongly.
+4. **Serialise device tests** — ctest `RESOURCE_LOCK` or a fixture; upstream-shaped, no patch.
+5. Deferred: default pool size is `hardware_concurrency()` = 24 on this machine, which puts 8
+   workers on utility cores; 16 threads measured faster than 24. `PORTABILITY.md`.
+
+**Do NOT spend time on:** `_nWorkersInWork` cache-line padding or the graph-global `progress`
+counter. Profiled at ≤2.5 % and not visible respectively — both are amortised over large
+per-`work()` chunks. Revisit only if something else stops dominating.

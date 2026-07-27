@@ -201,3 +201,110 @@ around it. *Unnecessary when:* upstream adopts a shared-mutex condvar. Note the 
 (original work), so unlike the LGPL cherry-picks it carries no licensing obstacle to contribution.
 
 **Reverse:** `git revert` the fix commit; nothing else depends on it.
+
+---
+
+## Category G — the double-mapped ring buffer (three defects, one of them ours to report)
+
+`core/include/gnuradio-4.0/CircularBuffer.hpp`, `core/include/gnuradio-4.0/Port.hpp`,
+`core/test/qa_buffer.cpp`. Full measurements in `RESULTS.md`.
+
+Found by profiling: **33 % of all CPU time in one worker of a 16-thread run was
+`_platform_memmove`** under `~OutputSpan()`, against 42 % in the actual SIMD DSP. That is the
+`CircularBuffer` mirror copy, and it runs on **every publish** — not, as previously recorded here,
+on every wrap.
+
+### G-1 — the mmap gate tested a Linux syscall number
+
+`#ifdef __NR_memfd_create` gated the whole double-mapped implementation. That is a **Linux syscall
+number**, so every other POSIX system silently fell back to the copying path. Darwin has no
+`memfd_create` but has POSIX shared memory, which is all this needs: an `shm_open` object
+`shm_unlink`ed immediately after creation is the exact equivalent of an anonymous `memfd`, and
+nothing is left in the global namespace even on a crash. Two Darwin specifics: names are capped at
+`PSHMNAMLEN` (31 incl. the leading slash), and the second mapping needs `MAP_FIXED` because Darwin
+treats a bare address as advisory — safe, because the hole was just `munmap`ed. **Linux behaviour
+is unchanged.**
+
+### G-2 — the double-mapped path was dead code on EVERY platform
+
+The larger defect, and not macOS-specific. `Graph::connect` always passes `edge._dataResource` to
+`Port::resizeBuffer` (`Graph.hpp:695`), and for a host-domain edge that is
+`std::pmr::get_default_resource()` — **non-null**. `resizeBuffer` treated any non-null pointer as an
+override and so never consulted `BufferType`'s own `DefaultAllocator()`. Net effect: **no
+graph-connected port has ever used the double-mapped ring, on any platform**, and Linux users are
+paying this copy too. `Graph` spells "no override" as the default resource while `Port` tested for
+`nullptr`; `resizeBuffer` now accepts both spellings.
+
+### G-3 — the double-mapped path published without a release fence
+
+**⚠ The path had FIVE defects.** G-2 is why: with the double-mapped allocator unreachable from any
+graph, nothing downstream of it was ever exercised, so G-1 and G-3..G-5 could all sit there
+indefinitely. Enabling it turned each one up in turn.
+
+
+Exposed by G-2's fix, and **found on hardware, not by any test**. The `gr::atomicThreadFence()`
+before `_claimStrategy.publish(...)` sat *inside* the `if (!_isMmapAllocated)` branch, so the
+double-mapped path published with no fence at all. On a weakly ordered ISA the payload stores may
+become visible *after* the cursor update, letting a reader observe published-but-unwritten samples.
+Harmless on x86's TSO, and invisible everywhere because of G-2. Moved out of the branch.
+
+**How it surfaced:** a B210 at 16 MS/s overflowed at DSP depth ≥ 4 while depth 0–2 were clean, and
+throughput could not explain it (238 Msps available against a 16 MS/s need). The full serial `ctest`
+was green across three runs with this bug present — **only streaming hardware caught it.** That is
+the strongest argument in this project so far for the owner's insistence on hardware in the loop.
+
+### G-4 — the allocator raced any other `mmap` in the process
+
+Exposed by fixing G-3. `do_allocate_internal` mapped 2×, `munmap`ed the upper half, and re-mapped
+the object into the resulting **hole**. In that window the hole belongs to nobody, so any other
+thread's `mmap` — including the ones libmalloc issues for large allocations — can be placed there.
+The re-map then either lands elsewhere (the address check throws) or, with `MAP_FIXED`, **silently
+clobbers the victim's mapping.** Measured: intermittent **SIGBUS in ~20 % of 16-thread runs**, and
+in principle silent cross-buffer corruption rather than a crash.
+
+Replaced with reserve-then-overlay: reserve the whole 2× range `PROT_NONE`, then `MAP_FIXED` both
+halves into a range this process already owns. No hole ever exists, so nothing can take it. Also
+simpler than what it replaces — one loop instead of a map/unmap/remap dance and its address check.
+
+### G-5 — the mirror half of every buffer leaked
+
+`do_allocate(required_size)` maps `2 * required_size`; `do_deallocate(p, size)` is called with that
+same `required_size` and did `munmap(p, size)` — **unmapping only half**. Every buffer free leaked
+its mirror mapping: an unbounded address-space leak that also fragments the space G-4's reservation
+has to be placed into, making G-4 progressively more likely in a long-lived process.
+
+### Effect
+
+| Measure | Before | After |
+|---|---|---|
+| 1 chain, 1 thread | 291 Msps | **454** |
+| 16 chains, 16 threads | 985 Msps | **2390** (2.43×) |
+| peak, as a multiple of a B210 | 16× | **38.9×** |
+| 16-thread scaling | 4.16× | **7.42×** |
+| stream buffer allocation | 2× logical size | **1×** |
+
+The copy is memory-bandwidth-bound, so the cores were contending for it — it was flattening the
+scaling curve, not merely taxing each core. Lands within 3 % of a mirror-elision probe, confirming
+the copy was the whole cost.
+
+### Test change — declared, because it is a test being relaxed
+
+`qa_buffer`'s "power-of-2 fast path preservation" asserted `size == 1024` exactly. A double-mapped
+ring cannot be smaller than one page, so the element floor is `page_size/sizeof(T)`: exactly 1024 on
+4 KiB pages, **4096 on Apple silicon's 16 KiB**. That assertion encoded a page size rather than the
+property it is named for. Rewritten to the real invariant — never shrunk below the request, still a
+power of two, a whole number of pages — **not deleted, and not weakened**: it now also asserts page
+alignment, which it never checked before. The heavy suites (`WrapAroundAndEdgeCases`, 822 588
+asserts; `CursorCacheStaleness`, 815 636) now exercise the double-mapped path and pass.
+
+### Reconciliation path
+
+**All three are upstream-shaped and all three are ours** (original work, no LGPL provenance), so
+unlike the Category E cherry-picks they carry no licensing obstacle to being offered upstream. G-2
+and G-3 are platform-neutral bug fixes that benefit Linux; G-1 removes a Linux assumption rather
+than adding a platform branch.
+
+*Unnecessary when:* upstream fixes the resource-override test, moves the fence, and widens the gate.
+
+**Reverse:** `git revert` the Category G commits. Note G-3 must not be reverted while G-2 stands —
+that combination is the data-race one.

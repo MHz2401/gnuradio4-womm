@@ -798,3 +798,120 @@ AGC: YES` line is almost certainly accurate; it was never the failing thing.
 **Method note:** the mistake was reading one number from a long probe dump and not checking which
 section it came from. Antenna-specific ranges differ on this hardware; quote the section, not just
 the number.
+
+---
+
+## Phase 6 — THE DOUBLE-MAPPED RING. 2.43× throughput, and a data race only hardware caught
+
+### 6.1 First: the instrument was invalid, and two recorded numbers with it
+
+`womm_bm_scaling` sized the CPU pool to the chain count, so **every published point varied workload
+and parallel decomposition simultaneously**, and the 1-chain point was a different regime entirely:
+one job, topological order, zero cross-thread edges. Every speedup was normalised against that.
+
+**"1→2 chains gains nothing" was an artefact of the axes, not a property of the runtime.** Rebuilt
+with independent `--chains`/`--threads`, a steady-state window, and one cell per process. Retract
+the 2.07×-from-16-chains curve entirely.
+
+**Retraction:** the recorded **168.8 Msps** single-chain figure was *still* setup-diluted at 20 M
+samples/chain. Windowed, that same cell is **291 Msps**. `time -l` was not enough; only a windowed
+rate makes setup contamination impossible rather than merely unlikely.
+
+### 6.2 The profile — where the time actually went
+
+One worker of a 16-thread run, 5441 samples (`sample`, zero code edits):
+
+| cost | samples | share |
+|---|---|---|
+| `invokeProcessOneSimd` — the actual DSP | 2303 | 42 % |
+| `~OutputSpan()` → `_platform_memmove` | 1804 | **33 %** |
+| `computeSampleLimits` (tag scan, port cache) | 558 | 10 % |
+| `poolWorker` self time (`_nWorkersInWork` lives here) | 138 | 2.5 % |
+
+The prior ranking had this third and scheduled it last. It was the whole thing. The two atomic
+suspects — `_nWorkersInWork` and the graph-global `progress` counter — are **≤2.5 % and not
+visible respectively**; both are amortised over large per-`work()` chunks, exactly as predicted by
+the skeptical reading. Neither is worth pursuing until something else dominates.
+
+### 6.3 Three defects, found in order
+
+1. **The mmap gate tested `__NR_memfd_create`** — a Linux syscall number — so Darwin fell back to
+   copying. `shm_open` + immediate `shm_unlink` is the equivalent; `MAP_FIXED` needed for the
+   second mapping.
+2. **The double-mapped path was dead code on every platform.** `Graph::connect` passes
+   `std::pmr::get_default_resource()` — non-null — and `Port::resizeBuffer` treated any non-null
+   pointer as an override, never consulting `DefaultAllocator()`. **Linux is paying this copy too.**
+3. **That path published with no release fence** (it sat inside the `!_isMmapAllocated` branch).
+   On ARM64 payload stores may become visible after the cursor update. Hidden by defect 2.
+
+### 6.4 Results — windowed steady state, correct data
+
+| cell | before | after | gain |
+|---|---|---|---|
+| 1 chain, 1 thread | 291 | **454** | 1.56× |
+| 16 chains, 1 thread | 231 | **322** | 1.39× |
+| 16 chains, 8 threads | 789 | **1319** | 1.67× |
+| 16 chains, 16 threads | 985 | **2390** | **2.43×** |
+
+Peak **16× → 38.9× a B210**. 16-thread scaling **4.16× → 7.42×**: the copy is memory-bandwidth
+bound, so cores contended for it and it flattened the curve rather than merely taxing each core.
+Within 3 % of a mirror-elision probe, confirming the copy was the entire cost.
+
+Serial `ctest` **101/102 on three consecutive runs** (152.6 / 152.4 / 142.3 s); the single failure
+is the known pre-existing `qa_SoapySource` out-of-range gain.
+
+### 6.5 ⚠ The regression, and why hardware found what 102 tests could not
+
+Enabling the double-mapped path **broke the radio**. A B210 at 16 MS/s that previously kept up
+cleanly began overflowing immediately.
+
+| DSP depth | 16 MS/s |
+|---|---|
+| 0, 1, 2 | keeps up |
+| 4, 8 | **OVERFLOW, uncaught, process dies** |
+
+Throughput could not explain it — the synthetic control ran 238 Msps against a 16 MS/s need. The
+depth dependence pointed at ordering rather than speed, which located defect 3 above. Moving the
+fence out of the branch restored 16 MS/s at every depth.
+
+**The full serial suite was green across three runs while this data race was present.** Only
+streaming hardware caught it. This is the strongest evidence this project has produced for keeping
+a radio in the loop, and it is the direct vindication of that instruction.
+
+### 6.5b Then two more, each exposed by fixing the one before it
+
+Fixing the fence exposed an **intermittent SIGBUS, ~20 % of 16-thread runs**. `do_allocate_internal`
+mapped 2×, `munmap`ed the upper half, and re-mapped into the resulting **hole**. In that window the
+hole is unowned, so any other thread's `mmap` — libmalloc's included — can take it, and `MAP_FIXED`
+then silently clobbers the victim. Replaced with reserve-`PROT_NONE`-then-overlay: both halves land
+in a range the process already owns, so no hole ever exists.
+
+And `do_deallocate` unmapped `size` where `do_allocate` mapped `2 * size` — **the mirror half of
+every buffer leaked**, which also fragments the address space the reservation above has to fit into,
+making the race likelier the longer a process runs.
+
+**Five defects total**, and the reason they coexisted is defect 2: with the allocator unreachable
+from any graph, nothing downstream of it was ever executed. Dead code does not merely fail to help
+— it silently accumulates bugs that the test suite reports as passing.
+
+**Method note — mine to own.** The very first 16-thread run after enabling the path produced no
+output line at all. I noted it, saw the next three runs pass, and moved on. That was the SIGBUS,
+~4 runs from reproducing. An unexplained missing result is a finding, not noise; three green runs
+do not retire it.
+
+### 6.6 Retraction — "graph lifecycle leaks memory"
+
+**Withdrawn. There is no leak.** Measured directly: a **single** 16-chain graph cycle peaks at
+**6.92 GiB**. The recorded 8 GiB across *seven* cycles is therefore consistent with memory being
+released each cycle — a leak would have shown ~42 GiB. The prior reasoning also had the evidence
+available and unread: page reclaims were 1 710 937 at 1 M samples/chain and 1 764 674 at 20 M —
+**flat**, i.e. a fixed allocation cost, not an accumulating one.
+
+The real cause is static over-allocation, dominated by one line. `Port::resizeBuffer` passes the
+**same element count** to the stream and tag buffers, and `Tag` is `alignas(kCacheLine)` = **128 B
+on Apple ARM64**. A connected `float` port at 65536 therefore gets 256 KiB of stream and **16 MiB
+of tags** — 64×, and 4× worse than the same graph on Linux/x86-64. `Tag` is not trivially copyable,
+so tag buffers stay on the copying path and are untouched by the Category G fix.
+
+**Open, tier 2:** decouple tag-buffer sizing from stream-buffer sizing. Nothing in this workload
+needs 65536 tags in flight per port.
