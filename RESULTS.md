@@ -1134,8 +1134,24 @@ we have two:
 - `clock_source`/`time_source` — **exposed** (`SoapySource.hpp:48,60`), currently unset.
 - `activate(int flags, long long timeNs, std::size_t numElems)` — **already in the wrapper**
   (`SoapyRaiiWrapper.hpp:750`), and `setHardwareTime(long long)` at `:486`.
-- A `start_time` setting on the block — **missing**. `SoapySource::start()` calls `activate()` with
-  `timeNs = 0`, so no timed start is expressible today.
+- A `start_time` setting on the block — **missing**. `SoapySource::start()` calls `activate()`
+  **bare** (`SoapySource.hpp:182`), so flags/timeNs/numElems are all 0 and no timed start is
+  expressible today.
+- `setHardwareTime(long long timeNs, const std::string& event)` — **in the wrapper**
+  (`SoapyRaiiWrapper.hpp:486`) and **never called**. The `event` argument is the important part:
+  `setHardwareTime(0, "PPS")` maps onto UHD's `set_time_next_pps()`, which is what actually
+  disciplines several radios to a common epoch. `getHardwareTime` (`:484`) is likewise unused.
+
+**`stream_args='sync=pps'` does not work here — checked.** The device advertises its stream args
+explicitly and the list is `spp`, `WIRE`, `peak`, `recv_frame_size`, `num_recv_frames`, `fullscale`
+— **no `sync` key**. The only PPS string in `libuhdSupport.so` is `UNKNOWN_PPS`, which is a
+*time_source* value, not a stream argument. Since SoapySDR silently ignores unrecognised args
+rather than rejecting them, passing `sync=pps` would be a **no-op that looks configured** — the
+worst failure mode available. The equivalent capability is real but lives on `setHardwareTime`'s
+`event` parameter, not in stream args.
+
+**So the whole sync path is plumbing, not capability.** All three primitives already exist; the
+block wires none of them together.
 
 `time_ns` is **signed 64-bit integer nanoseconds** end to end, with no narrowing in our path, so the
 negative-offset convention maps directly (-1.0 s → -1'000'000'000).
