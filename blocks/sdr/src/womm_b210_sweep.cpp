@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include <unistd.h>
+
 #include <gnuradio-4.0/Graph.hpp>
 #include <gnuradio-4.0/Scheduler.hpp>
 
@@ -138,22 +140,33 @@ Point runAtRate(double rateHz) {
     const double     streamSec   = std::chrono::duration<double>(std::chrono::steady_clock::now() - tFirst).count();
     sched.requestStop();
 
-    // hard backstop: never let a wedged graph hold the machine
+    // Hard backstop. The previous version tested runner.joinable(), which stays true
+    // until join() is actually called - so that term never ended the loop - and then
+    // called join() unconditionally, which blocks forever on a wedged graph. That is
+    // the 1717%-CPU hang with a 15 s delay in front of it, not a backstop.
+    // Poll the scheduler state, and on timeout DETACH rather than join: a thread we
+    // refuse to wait for cannot hold the process. main()'s alarm() is the layer below.
+    bool       wedged   = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
-    while (runner.joinable() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (sched.state() == gr::lifecycle::State::STOPPED || sched.state() == gr::lifecycle::State::IDLE) {
+    while (std::chrono::steady_clock::now() < deadline) {
+        const gr::lifecycle::State state = sched.state();
+        if (state == gr::lifecycle::State::STOPPED || state == gr::lifecycle::State::IDLE || state == gr::lifecycle::State::ERROR) {
             break;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    if (runner.joinable()) {
+    if (const gr::lifecycle::State state = sched.state(); state == gr::lifecycle::State::STOPPED || state == gr::lifecycle::State::IDLE) {
         runner.join();
+    } else {
+        std::println(stderr, "  WEDGED: scheduler still in {} after stop request - detaching", state);
+        wedged = true;
+        runner.detach();
     }
     const auto t1 = std::chrono::steady_clock::now();
 
     const double elapsed  = std::chrono::duration<double>(t1 - t0).count();
     const double achieved = streamSec > 0.0 ? static_cast<double>(countAtStop - countAtFirst) / streamSec : 0.0;
-    return {rateHz, elapsed, achieved, ok.load(std::memory_order_relaxed)};
+    return {rateHz, elapsed, achieved, ok.load(std::memory_order_relaxed) && !wedged};
 }
 
 int main(int argc, char* argv[]) {
@@ -170,6 +183,10 @@ int main(int argc, char* argv[]) {
     if (argc > 4) {
         kMinimalCfg = (std::string(argv[4]) == "min");
     }
+
+    // Last-resort backstop, below the per-point one: a spinning worker cannot defeat
+    // SIGALRM. Device bring-up on a B210 is ~2.5 s, so budget generously per point.
+    alarm(static_cast<unsigned>(static_cast<double>(rates.size()) * (kDurationSec + 60.0)) + 60U);
 
     std::println("womm B210 end-to-end rate sweep");
     std::println("chain: SoapySource({}, complex<float>) -> {}x(mul,div) -> CountingSink", kDevice, kDepth);

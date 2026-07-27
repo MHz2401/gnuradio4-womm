@@ -128,49 +128,37 @@ class double_mapped_memory_resource : public std::pmr::memory_resource {
             throw std::system_error(errorCode, std::format("{} - ftruncate {}: {}", buffer_name, errno, strerror(errno)));
         }
 
-        void* first_copy = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, static_cast<off_t>(0));
-        if (first_copy == MAP_FAILED) {
+        // RESERVE the whole 2x range first, then overlay both halves into it.
+        //
+        // The previous sequence mapped 2x, munmap()ed the upper half, and re-mmap()ed the
+        // object into the resulting HOLE. Between those two calls the hole belongs to
+        // nobody, so any other thread's mmap - including the ones libmalloc issues for
+        // large allocations - can be placed there. The re-map then either lands elsewhere
+        // (and the address check throws) or, with MAP_FIXED, SILENTLY CLOBBERS the victim's
+        // mapping. That is an intermittent SIGBUS or, worse, silent cross-buffer corruption,
+        // and it gets likelier with thread count: measured ~20% of 16-thread runs.
+        //
+        // Reserving PROT_NONE first means both MAP_FIXED overlays land in a range this
+        // process already owns, so there is no window in which anything else can take it.
+        void* base = mmap(nullptr, size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, static_cast<off_t>(0));
+        if (base == MAP_FAILED) {
             std::error_code errorCode(errno, std::system_category());
             close(shm_fd);
-            throw std::system_error(errorCode, std::format("{} - failed munmap for first half {}: {}", buffer_name, errno, strerror(errno)));
+            throw std::system_error(errorCode, std::format("{} - failed to reserve {} bytes {}: {}", buffer_name, size, errno, strerror(errno)));
         }
 
-        // unmap the 2nd half
-        if (munmap(static_cast<char*>(first_copy) + size_half, size_half) == -1) {
-            std::error_code errorCode(errno, std::system_category());
-            close(shm_fd);
-            throw std::system_error(errorCode, std::format("{} - failed munmap for second half {}: {}", buffer_name, errno, strerror(errno)));
-        }
-
-        // Map the first half into the now available hole.
-        // Note that the second_copy_addr mmap argument is only a hint and mmap might place the
-        // mapping somewhere else: "If addr is not NULL, then the kernel takes it as  a hint about
-        // where to place the mapping". The returned pointer therefore must equal second_copy_addr
-        // for our contiguous mapping to work as intended.
-        void* second_copy_addr = static_cast<char*>(first_copy) + size_half;
-#ifdef __APPLE__
-        // Darwin treats a bare address as advisory and will happily place the mapping
-        // elsewhere, which fails the equality check below every time. MAP_FIXED is safe
-        // here precisely because the hole was just munmap()ed above, so there is nothing
-        // for it to clobber. Left off on Linux, where the hint already works.
-        constexpr int kSecondMapFlags = MAP_SHARED | MAP_FIXED;
-#else
-        constexpr int kSecondMapFlags = MAP_SHARED;
-#endif
-        if (const void* result = mmap(second_copy_addr, size_half, PROT_READ | PROT_WRITE, kSecondMapFlags, shm_fd, static_cast<off_t>(0)); result != second_copy_addr) {
-            std::error_code errorCode(errno, std::system_category());
-            close(shm_fd);
-            if (result == MAP_FAILED) {
-                throw std::system_error(errorCode, std::format("{} - failed mmap for second copy {}: {}", buffer_name, errno, strerror(errno)));
-            } else {
-                ptrdiff_t diff2 = static_cast<const char*>(result) - static_cast<char*>(second_copy_addr);
-                ptrdiff_t diff1 = static_cast<const char*>(result) - static_cast<char*>(first_copy);
-                throw std::system_error(errorCode, std::format("{} - failed mmap for second copy: mismatching address -- result {} first_copy {} second_copy_addr {} - diff result-2nd {} diff result-1st {} size {}", buffer_name, gr::ptr(result), gr::ptr(first_copy), gr::ptr(second_copy_addr), diff2, diff1, 2 * size_half));
+        for (std::size_t half = 0UZ; half < 2UZ; ++half) {
+            void* target = static_cast<char*>(base) + half * size_half;
+            if (const void* result = mmap(target, size_half, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, shm_fd, static_cast<off_t>(0)); result != target) {
+                std::error_code errorCode(errno, std::system_category());
+                close(shm_fd);
+                munmap(base, size);
+                throw std::system_error(errorCode, std::format("{} - failed mmap for half {} at {}: {}", buffer_name, half, gr::ptr(target), strerror(errno)));
             }
         }
 
         close(shm_fd); // file-descriptor is no longer needed. The mapping is retained.
-        return first_copy;
+        return base;
     }
 #else
     [[nodiscard]] static void* do_allocate_internal(const std::size_t, std::size_t) { // NOSONAR
@@ -181,8 +169,11 @@ class double_mapped_memory_resource : public std::pmr::memory_resource {
 
 #ifdef HAS_POSIX_MAP_INTERFACE
     void do_deallocate(void* p, std::size_t size, std::size_t alignment) override { // NOSONAR
-
-        if (munmap(p, size) == -1) {
+        // do_allocate maps 2 * size (the ring plus its mirror), so the whole 2 * size has
+        // to go back. Unmapping only `size` leaked the mirror half of EVERY buffer - an
+        // unbounded address-space leak that also fragments the space the allocator above
+        // has to place new reservations into.
+        if (munmap(p, 2 * size) == -1) {
             throw std::system_error(errno, std::system_category(), std::format("double_mapped_memory_resource::do_deallocate(void*, {}, {}) - munmap(..) failed", size, alignment));
         }
     }
@@ -438,8 +429,15 @@ private:
                             std::copy_n(base + size, nSecondHalf, base);
                         }
                     }
-                    gr::atomicThreadFence();
                 }
+                // The release fence used to sit INSIDE the branch above, so the
+                // double-mapped path published with no fence at all. On a weakly
+                // ordered ISA the payload stores may then become visible after the
+                // cursor update and a reader can observe published-but-unwritten
+                // samples. Harmless on x86's TSO, and invisible everywhere because
+                // this path was dead code - see Port::resizeBuffer. It belongs
+                // before the publish on BOTH paths.
+                gr::atomicThreadFence();
                 _parent->_buffer->_claimStrategy.publish(_parent->_offset, _parent->_nRequestedSamplesToPublish);
                 _parent->_offset += _parent->_nRequestedSamplesToPublish;
 #ifndef NDEBUG
