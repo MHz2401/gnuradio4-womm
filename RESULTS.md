@@ -770,3 +770,31 @@ Net: `qa_SoapySource` goes from 2 failures plus 2 unconditional hardware depende
 **Consequence for the stability gate:** still unmet, but for a defensible reason. Options are to
 fix or work around the AGC round-trip in SoapyUHD (ours is a vendored, patchable snapshot), or to
 accept it in writing as an upstream driver defect.
+
+---
+
+## CORRECTION — the "gain" failure is an out-of-range value, not an AGC defect
+
+I previously wrote that `SoapyUHD` "reports a capability it does not implement", based on
+`Supports AGC: YES` plus a failing assertion near `qa_SoapySource.cpp:172` and `RX active gain:
+nan`. **That conclusion was wrong and is withdrawn.**
+
+The owner identified the actual cause: on a B2xx the **RX2** antenna tops out around **76 dB**
+while **RX/TX (RX1)** reaches ~88 dB. A gain roughly 2× out of range yields `nan` from the device.
+Re-probing confirms it — RX reports `Full gain range: [0, 76, 1] dB`. The 89.75 dB figure quoted
+earlier was from the probe's **TX** section, which I misattributed to RX.
+
+So: a value out of range for the selected antenna, not a driver lying about AGC. The `Supports
+AGC: YES` line is almost certainly accurate; it was never the failing thing.
+
+**Consequences applied:**
+- `womm_b210_sweep.cpp` defaults corrected: RX gain **30 → 20 dB** (well inside range for either
+  antenna), centre frequency **100 MHz → 2401 MHz** (legal for amateur and WiFi use, and a safe
+  default should anything ever transmit).
+- The `qa_SoapySource` "gain" failure remains **open and undiagnosed at the source level** — the
+  test is upstream's and its gain value has not been examined. It is *not* evidence of a SoapyUHD
+  defect.
+
+**Method note:** the mistake was reading one number from a long probe dump and not checking which
+section it came from. Antenna-specific ranges differ on this hardware; quote the section, not just
+the number.

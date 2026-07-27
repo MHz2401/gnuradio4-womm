@@ -32,8 +32,8 @@ using T = std::complex<float>; // what the radio actually delivers
 
 inline std::size_t          kDepth        = 8UZ;   // argv[2] overrides; 0 = source straight to sink    // multiply/divide pairs, matches womm_bm_scaling
 inline constexpr double      kDurationSec  = 8.0;    // per rate point
-inline constexpr double      kCentreFreqHz = 100e6;  // FM band, benign and always populated
-inline constexpr double      kRxGainDb     = 30.0;
+inline constexpr double      kCentreFreqHz = 2401e6; // legal for HAM and WiFi; safe default even if TX ever appears
+inline constexpr double      kRxGainDb     = 20.0;  // B2xx RX2 tops out at 76 dB; 20 is a sane working value
 inline constexpr double      kB210MaxRate  = 61.44e6;
 inline bool                  kMinimalCfg   = false; // argv[4]=min -> device only
 inline std::string           kDevice       = "uhd";  // argv[3] overrides (e.g. "loopback")

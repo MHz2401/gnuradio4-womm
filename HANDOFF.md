@@ -189,11 +189,14 @@ plausibly a deliberate safeguard for unattended CI runners, not an oversight. Tr
 ## 3. Current state — what works
 
 - Builds clean: 1850 targets, ~600 s at `-j16`, **0 errors, 0 compiler warnings**.
-- **ctest 101/102 (serial).** The one failure is `qa_SoapySource`'s "gain" test at `:172` — a
-  **real, diagnosed defect**: SoapyUHD reports `Supports AGC: YES` for the B210 but
-  `setAutomaticGainControl()` / `isAutomaticGainControl()` do not round-trip, and active gain reads
-  `nan`. Not skipped: the device is present and the assertion is sound. Its two *missing-device*
+- **ctest 101/102 (serial).** The one failure is `qa_SoapySource`'s "gain" test — **cause is an
+  out-of-range gain value, NOT an AGC defect** (an earlier session claimed the latter; withdrawn).
+  On a B2xx, RX2 tops out at ~76 dB and RX/TX at ~88 dB; an out-of-range value returns `nan`.
+  Undiagnosed at source level; do not treat it as a SoapyUHD bug. Its two *missing-device*
   failures (rtlsdr, lime) now skip cleanly.
+- **B2xx RF defaults that are known-good:** RX gain **20 dB**, centre **2401 MHz** (legal for
+  amateur and WiFi). Antenna gain ranges differ — RX2 ≠ RX/TX — so quote the probe section, not
+  just a number.
 - **Run ctest SERIALLY** (invariant I-11). Device tests are not parallel-safe.
 - Five upstream correctness fixes cherry-picked (watchdog leak, message-path deadlock,
   init-on-reset, CircularBuffer churn, RT-safe housekeeping) — provenance in `DRIFT.md` Category E.
