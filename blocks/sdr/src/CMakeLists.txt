@@ -67,6 +67,7 @@ target_link_libraries(
           gnuradio-core
           gnuradio-blocklib-core
           gr-sdr
+          gr-fileio
           gr-testing)
 
 # RECEIVE-ONLY GATE. The harness must be structurally incapable of transmitting, not

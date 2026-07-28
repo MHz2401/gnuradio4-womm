@@ -47,6 +47,7 @@
 #include <chrono>
 #include <complex>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <print>
 #include <string>
@@ -60,6 +61,7 @@
 #include <gnuradio-4.0/Scheduler.hpp>
 #include <gnuradio-4.0/thread/thread_pool.hpp>
 
+#include <gnuradio-4.0/fileio/BasicFileIo.hpp>
 #include <gnuradio-4.0/sdr/SoapySource.hpp>
 #include <gnuradio-4.0/testing/NullSources.hpp>
 
@@ -80,6 +82,15 @@ inline constexpr double kTwoChannelMcrHz = 30.72e6;
 inline constexpr double kDefaultRate     = kTwoChannelMcrHz / 2.0;
 
 inline constexpr std::array<std::string_view, 2> kRxOnlyAntennae{"RX2", "TX/RX"};
+
+// RF parameters stay OUT of the committed defaults: a frequency or gain checked in
+// here becomes someone else's emission on someone else's licence the moment a TX
+// path appears. Defaults are the documented-safe B2xx values; the actual test
+// values arrive at runtime.
+double envOr(const char* key, double fallback) {
+    const char* v = std::getenv(key);
+    return v ? std::atof(v) : fallback;
+}
 
 void mustConnect(auto&& r, std::string_view what) {
     if (!r.has_value()) {
@@ -104,6 +115,8 @@ std::vector<std::string> discoverSerials() {
 // against the vector it was given, so a one-element vector against two channels
 // reports a spurious mismatch.
 gr::property_map radioConfig(const std::string& serial, double rateHz, const std::string& antenna) {
+    const double freqHz = envOr("WOMM_FREQ", kCentreFreqHz);
+    const double gainDb = envOr("WOMM_GAIN", kRxGainDb);
     using namespace std::string_literals;
 
     gr::property_map cfg{
@@ -111,8 +124,8 @@ gr::property_map radioConfig(const std::string& serial, double rateHz, const std
         {"device_parameter", std::format("serial={}", serial)},
         {"num_channels", gr::Size_t{kChannels}},
         {"sample_rate", static_cast<float>(rateHz)},
-        {"frequency", std::vector<double>(kChannels, kCentreFreqHz)},
-        {"rx_gains", std::vector<double>(kChannels, kRxGainDb)},
+        {"frequency", std::vector<double>(kChannels, freqHz)},
+        {"rx_gains", std::vector<double>(kChannels, gainDb)},
         {"rx_bandwidths", std::vector<double>(kChannels, rateHz)},
         {"rx_antennae", std::vector<std::string>(kChannels, antenna)},
         {"max_time_out_us", std::uint32_t{1000000}},
@@ -153,7 +166,9 @@ gr::property_map radioConfig(const std::string& serial, double rateHz, const std
 int main(int argc, char* argv[]) {
     using namespace std::string_literals;
 
-    const double      rateHz  = argc > 1 ? std::atof(argv[1]) : kDefaultRate;
+    const double      rateHz     = argc > 1 ? std::atof(argv[1]) : envOr("WOMM_RATE", kDefaultRate);
+    const double      captureSec = envOr("WOMM_CAPTURE_SEC", 0.0);
+    const std::string captureDir = std::getenv("WOMM_CAPTURE_DIR") ? std::getenv("WOMM_CAPTURE_DIR") : "data";
     const std::string antenna = argc > 2 ? argv[2] : "TX/RX"; // where the antennas are actually connected
 
     if (std::ranges::find(kRxOnlyAntennae, antenna) == kRxOnlyAntennae.end()) {
@@ -195,11 +210,28 @@ int main(int argc, char* argv[]) {
     gr::Graph graph;
     auto&     src = graph.emplaceBlock<gr::blocks::sdr::SoapySource<TRadio, kChannels>>(radioConfig(serial, rateHz, antenna));
 
-    std::array<gr::testing::CountingSink<TRadio>*, kChannels> sinks{};
-    for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
-        auto& sink = graph.emplaceBlock<gr::testing::CountingSink<TRadio>>({{"n_samples_max", gr::Size_t{0}}});
-        mustConnect(graph.connect(src, std::format("out#{}", ch), sink, "in"s), std::format("src out#{} -> sink", ch));
-        sinks[ch] = std::addressof(sink);
+    // A port feeds exactly one consumer, so capture REPLACES the counting sink
+    // rather than tapping alongside it. Liveness then comes from bytes written.
+    std::array<gr::testing::CountingSink<TRadio>*, kChannels>        sinks{};
+    std::array<gr::blocks::fileio::BasicFileSink<TRadio>*, kChannels> fileSinks{};
+
+    if (captureSec > 0.0) {
+        std::filesystem::create_directories(captureDir);
+        // Hard byte cap derived from the duration, enforced BY THE BLOCK. A comment
+        // cannot stop a capture that outlives its stop signal; max_bytes_per_file can.
+        const auto capBytes = static_cast<gr::Size_t>(rateHz * captureSec * static_cast<double>(sizeof(TRadio)) * 1.10);
+        for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
+            const std::string path = std::format("{}/capture_{}_ch{}.bin", captureDir, serial, ch);
+            auto&             sink = graph.emplaceBlock<gr::blocks::fileio::BasicFileSink<TRadio>>({{"file_name", path}, {"max_bytes_per_file", capBytes}});
+            mustConnect(graph.connect(src, std::format("out#{}", ch), sink, "in"s), std::format("src out#{} -> file sink", ch));
+            fileSinks[ch] = std::addressof(sink);
+        }
+    } else {
+        for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
+            auto& sink = graph.emplaceBlock<gr::testing::CountingSink<TRadio>>({{"n_samples_max", gr::Size_t{0}}});
+            mustConnect(graph.connect(src, std::format("out#{}", ch), sink, "in"s), std::format("src out#{} -> sink", ch));
+            sinks[ch] = std::addressof(sink);
+        }
     }
 
     gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::multiThreaded> sched;
@@ -211,7 +243,10 @@ int main(int argc, char* argv[]) {
     std::println("womm hold-open RX — radio {}", serial);
     const double mcrHz = std::getenv("WOMM_MCR") ? std::atof(std::getenv("WOMM_MCR")) : kTwoChannelMcrHz;
     std::println("RECEIVE ONLY. {} channels x {:.2f} MS/s = {:.2f} MS/s aggregate, master clock {:.2f} MHz", kChannels, rateHz / 1e6, rateHz * static_cast<double>(kChannels) / 1e6, mcrHz / 1e6);
-    std::println("centre {:.1f} MHz, gain {:.0f} dB, antenna {}", kCentreFreqHz / 1e6, kRxGainDb, antenna);
+    std::println("centre {:.6f} MHz, gain {:.0f} dB, antenna {}", envOr("WOMM_FREQ", kCentreFreqHz) / 1e6, envOr("WOMM_GAIN", kRxGainDb), antenna);
+    if (captureSec > 0.0) {
+        std::println("CAPTURE {:.2f} s -> {}/capture_{}_ch*.bin  (cap {:.1f} MB/channel)", captureSec, captureDir, serial, rateHz * captureSec * static_cast<double>(sizeof(TRadio)) * 1.10 / 1e6);
+    }
     std::println("depth 0 — source straight to counting sinks, no DSP");
     std::println("");
     std::println("  >>> WATCH THE FRONT PANEL. Both RX channels should light. <<<");
@@ -221,17 +256,24 @@ int main(int argc, char* argv[]) {
     std::atomic<bool> ok{true};
     std::thread       runner([&] { ok.store(sched.runAndWait().has_value(), std::memory_order_relaxed); });
 
+    // Enter-to-stop belongs to the INTERACTIVE liveness mode only. In capture mode
+    // the duration governs, and a waiter on stdin would end the run instantly the
+    // moment stdin is /dev/null or a closed pipe - which is exactly how an
+    // unattended capture silently produces zero samples.
     std::atomic<bool> stopRequested{false};
-    std::thread       waiter([&] {
-        std::string line;
-        std::getline(std::cin, line);
-        stopRequested.store(true, std::memory_order_release);
-    });
+    std::thread       waiter;
+    if (captureSec <= 0.0) {
+        waiter = std::thread([&] {
+            std::string line;
+            std::getline(std::cin, line);
+            stopRequested.store(true, std::memory_order_release);
+        });
+    }
 
     const auto counts = [&] {
         std::array<gr::Size_t, kChannels> c{};
         for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
-            c[ch] = sinks[ch]->count.value;
+            c[ch] = fileSinks[ch] ? static_cast<gr::Size_t>(fileSinks[ch]->_totalBytesWritten / sizeof(TRadio)) : sinks[ch]->count.value;
         }
         return c;
     };
@@ -253,6 +295,16 @@ int main(int argc, char* argv[]) {
                 std::println("  !!! channel {} produced NO samples during bring-up !!!", ch);
             }
         }
+    }
+
+    // In capture mode the duration is the point, so stop on it rather than waiting
+    // for the operator. max_bytes_per_file remains as a second, independent bound.
+    std::thread captureTimer;
+    if (captureSec > 0.0) {
+        captureTimer = std::thread([&] {
+            std::this_thread::sleep_for(std::chrono::duration<double>(captureSec));
+            stopRequested.store(true, std::memory_order_release);
+        });
     }
 
     auto prev  = counts();
@@ -283,6 +335,9 @@ int main(int argc, char* argv[]) {
         prevT = now;
     }
 
+    if (captureTimer.joinable()) {
+        captureTimer.join();
+    }
     sched.requestStop();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -298,7 +353,9 @@ int main(int argc, char* argv[]) {
         std::println(stderr, "WEDGED in {} — detaching", st);
         runner.detach();
     }
-    waiter.detach(); // may still be blocked in getline() if we stopped for another reason
+    if (waiter.joinable()) {
+        waiter.detach(); // may still be blocked in getline() if we stopped for another reason
+    }
 
     const auto final = counts();
     std::println("");
