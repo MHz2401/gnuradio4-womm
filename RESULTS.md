@@ -1354,3 +1354,36 @@ three radios, not 120.
 
 Not run: three radios, three processes (the MCM topology), core utilisation during a two-channel
 run, or the depth sweep. E0.1/E0.2 are unchanged and still outstanding.
+
+### 9.6 ★★ THE ~40-44 MS/s "INGEST CAP" IS REFUTED. Three radios reach the hardware ceiling.
+
+Owner confirmed the LEDs by eye on all three units — **A and B frontends, both on RX2** — the first
+time two-channel receive has been seen in this project. With that established, three radios were run
+as **three separate processes** (the MCM topology), six channels, depth 0, `WOMM_THREADS=8` each.
+
+| | per channel | per radio | aggregate |
+|---|---|---|---|
+| 31FE7A2 ch0 / ch1 | 15.361 / 15.361 MS/s | 30.72 | |
+| 32FCCF7 ch0 / ch1 | 15.360 / 15.360 MS/s | 30.72 | |
+| 32FCD05 ch0 / ch1 | 15.359 / 15.359 MS/s | 30.72 | |
+| **total** | | | **92.16 MS/s** |
+
+**Ratio to the hardware maximum: 1.0000. Zero overflows, zero errors, 43 s sustained.**
+
+Against `RESULTS.md` §8's headline of "total ingest saturates at ~40-44 MS/s however it is divided",
+this is **2.1x higher and at the physical limit of the hardware.** §8's cap was not a property of
+USB, the driver, the host or gr4. **§8.6 is withdrawn in full, and §8's "the tier-1 bottleneck is
+SDR ingest" is withdrawn with it.**
+
+CPU during the run, sampled six times at 3 s intervals: **~42 % user, ~15 % sys, ~43 % idle** —
+about 13.7 of 24 cores. So the machine sustains its radios' full output with ~43 % idle, and the
+owner's "¼-⅓ of 16 cores" observation is consistent with a *lightly loaded* system rather than a
+starved one.
+
+**What this does NOT attribute.** The new configuration differs from §8's in three ways at once —
+two channels instead of one, depth 0 instead of 8, three processes instead of one graph. It refutes
+the cap; it does not say which of the three explained the old number. That is E0.1's job (depth
+sweep at fixed channel count and topology) and it is still outstanding.
+
+**Standing correction:** `HANDOFF.md` §1b ("★ THE TIER-1 BOTTLENECK IS NOW SDR INGEST, NOT DSP")
+is refuted by this measurement and needs to be retracted there.

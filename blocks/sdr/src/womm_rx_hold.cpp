@@ -54,6 +54,7 @@
 
 #include <gnuradio-4.0/Graph.hpp>
 #include <gnuradio-4.0/Scheduler.hpp>
+#include <gnuradio-4.0/thread/thread_pool.hpp>
 
 #include <gnuradio-4.0/sdr/SoapySource.hpp>
 #include <gnuradio-4.0/testing/NullSources.hpp>
@@ -163,6 +164,17 @@ int main(int argc, char* argv[]) {
     // operator stops it. WOMM_MAX_SEC arms a backstop for unattended use.
     if (const char* env = std::getenv("WOMM_MAX_SEC"); env) {
         alarm(static_cast<unsigned>(std::atol(env)));
+    }
+
+    // WOMM_THREADS sizes this process's CPU pool, and it is not optional for a
+    // multi-process run: the default is hardware_concurrency() PER PROCESS (24
+    // here), so three radios in three processes claim 72 workers on 24 cores.
+    // gr4's multi-threaded workers never back off, so that is 3x oversubscription
+    // of pure spin - previously measured as 3.54 vs 40.89 MS/s aggregate.
+    if (const char* env = std::getenv("WOMM_THREADS"); env) {
+        const auto n = static_cast<std::uint32_t>(std::atol(env));
+        using namespace gr::thread_pool;
+        Manager::instance().replacePool(std::string(kDefaultCpuPoolId), std::make_shared<ThreadPoolWrapper>(std::make_unique<BasicThreadPool>(std::string(kDefaultCpuPoolId), TaskType::CPU_BOUND, n, n), "CPU"));
     }
 
     gr::Graph graph;
