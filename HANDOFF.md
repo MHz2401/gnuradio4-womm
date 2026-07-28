@@ -1,46 +1,24 @@
 # HANDOFF — gnuradio4-womm
 
-**Read this before doing anything else.** You are continuing work that is 26 commits deep. Most
-of the expensive discovery is already done and recorded. Re-deriving it wastes the session.
+**Read this before doing anything else.** You are continuing work from multiple sessions. 
 
 ---
 
-## 0. FIRST COMMAND — verify where you are
+## FIRST — verify where you are
 
-The session may open attached to an unrelated project (`codpcl_LCS`). That project is **deprecated
-and irrelevant**; do not read, modify, or commit to it. All paths below are absolute for this
-reason — **never trust a relative path in this project.**
-
-Run this first. If it does not print `ROOT OK`, stop and tell the user:
-
-```bash
-cd /Users/whom/dvel/ghzhub/GR4-fork/gnuradio4-womm && \
-  test -f CLAUDE.md && test -d core/include/gnuradio-4.0 && \
-  echo "ROOT OK  $(git branch --show-current)  $(git log --oneline -1)"
-```
-
-Then activate the toolchain (source, never execute):
-
-```bash
-cd /Users/whom/dvel/ghzhub/GR4-fork/gnuradio4-womm && source scripts/env.sh
-```
-
-| Thing | Absolute path |
-|---|---|
-| Repo | `/Users/whom/dvel/ghzhub/GR4-fork/gnuradio4-womm` |
-| Isolated prefix | `/Users/whom/dvel/ghzhub/GR4-fork/womm-prefix` (deliberately **outside** the repo) |
-| Baseline build (stock) | `<repo>/build-baseline` |
-| Current build (fixed) | `<repo>/build-fixed` |
-| Working branch | `womm/m2ultra-wip` |
-| Snapshot to fall back to | tag `womm-known-good/2026-07-26` |
+In the past, the session has attached to an unrelated project (`codpcl_LCS`). That project is **deprecated
+and irrelevant**. The path you **should** be in is:
+`.../GR4-fork/gnuradio4-womm/`  
+and the correct current-branch is: `origin/womm/m2ultra-wip`
+Origin: `https://github.com/MHz2401/gnuradio4-womm`
 
 ---
 
-## 1. What this project is
+## WHAT THIS PROJECT IS
 
 Produce the most stable and performant working build of **gnuradio4** on a Mac Studio M2 Ultra,
 with a working path to **USRP B210** hardware. Not headed for a PR; never pushed. The owner is
-Walter (`walter@hacktuary.ai`), an experienced SDR user who reads code, checks claims, and
+Walter, an experienced SDR user who reads code, checks claims, and
 supplies useful measurements of his own. Treat his hypotheses as evidence to test, not as
 instructions — he has been right and wrong, and says so either way.
 
@@ -49,175 +27,123 @@ line. Three B210s attached over USB 3. Full Xcode, Apple clang 21.
 
 ---
 
-## 1b. PRIORITY TIERS — the owner's ordering. Respect it.
+### ⚠ RF TRANSMISSION and U.S. LAW — READ THIS
 
-**"Fully operational" means processing capacity approximately linear-proportional to hardware
-capacity.** Until that holds, assume undiscovered surprises: yesterday's independent issue becomes
-tomorrow's dependency and vice versa. Do not treat any tier as finished early.
+- **IT IS AGAINST FEDERAL LAW TO TRANSMIT WITHOUT A LICENSE ON MOST RADIO FREQUENCIES**  
+- _IT'S ALSO AGAINST FEDERAL LAW TO TRANSMIT (RX) **WITH** MOST LICENSE TYPES ON MOST FREQUENCIES._
+  - _This is one reason why GNURadio hardcodes automatable tests for the receive-only (RX-only) RTL/SDR._
+- **DO NOT AUTOMATE TRANSMISSION (TX) TESTS: all automated test code should be RX-only.** 
+
+---
+
+## PRIORITY TIERS — the owner's ordering. 
 
 | Tier | Scope | Contents |
 |---|---|---|
-| **0** | **the work exists and is backed up** — outranks everything, including tier 1 | commits pushed to `origin`; nothing of value living only on this machine |
-| **1** | **radio running** — performance while a device streams | thread QoS; scaling plateau; anything that costs throughput with hardware live |
-| **2** | radio off | graph-lifecycle memory; config-time costs; UI/reconfiguration paths |
+| **1** | **radio running** — performance while a device streams | Primary goal is **fully operational** gnuradio4 variant that works on this machine. |
+| **2** | radio off | UI dev; blocks; UI/reconfiguration paths |
 | **3+** | everything else | upstream contribution, public-repo polish |
 
-**Upstream contribution is tier 3 or lower** — not for lack of value, but because we are not done
-with a working local system, and premature contribution locks in an incomplete picture.
+- **"Fully operational" means processing capacity approximately linear-proportional to hardware
+capacity.** Until that holds, assume undiscovered surprises: yesterday's independent issue becomes
+tomorrow's dependency and vice versa. Do not treat any tier as finished early.
 
-**`scripts/build.sh` and `scripts/verify.sh` missing is a *symptom* that tiers 1–2 are unfinished
-— but the converse does not hold.** Expect to need both *before* reaching fully-operational.
+- **Upstream contribution is tier 3 or lower** — not for lack of value, but because we are not done
+with a working local system, and premature contribution locks in an incomplete picture.
 
 **The soak test is the yardstick for "done"** in both tier 1 (radio on) and tier 2 (radio off),
 judged against the linear-proportionality criterion above.
 
 **Making things work at capacity outranks formal QA for a public repo.**
 
-### Tier 0 in practice — when to push
-
-Losing work costs more than any tier-1 result is worth. Push:
+## WHEN TO PUSH
 
 - **at every gate / milestone** — and always before ending a session;
-- **after anything expensive to recreate** — a 10-minute build, a measurement run, a diagnosis
-  that took several experiments;
+- **after anything expensive to recreate** 
 - **before anything risky** — rebase, reset, upstream fetch/merge, or a large refactor;
 - **whenever more than a few commits have accumulated.** If in doubt, push.
 
-Cheap and reversible; the failure mode it prevents is not. Licensing of *this fork* is tier 3 —
-the owner renamed it `gnuradio4-womm` deliberately, and final licensing is sorted out later. **Do
-not let a licensing question block a backup push.**
+---
+
+## WHAT DO YOU MEAN BY "19 % WALL COST" ?
+
+We all make up jargon as we work because it saves time.  Tell everyone what it means.
 
 ---
 
-## 1c. GLOSSARY — terms used loosely in prior sessions
+## RULES THAT BIND (FROM PROJECT EXPERIENCE)
 
-Written because a successor will otherwise assume the owner has internalised shorthand he has seen
-once. Prefer these full phrasings over the shorthand.
+We're working with the early RC of an open-source project that includes unmaintained dependencies.
 
-| Term | Means |
-|---|---|
-| **wall time** | elapsed real-world clock time, as opposed to CPU time consumed |
-| **user / system time** | CPU seconds spent in the program vs in kernel calls. Can exceed wall time when threads run in parallel — 71 s of system time in a 5 s run means ~13 cores were in the kernel |
-| **involuntary context switch** | the OS preempted a thread that still wanted to run. Millions per second indicates thrash, not work |
-| **condvar** | `std::condition_variable`. Lets a thread *block* until signalled, instead of repeatedly waking to check |
-| **lost wakeup** | a signal sent while the waiter is between "checked the condition" and "went to sleep", so it sleeps anyway |
-| **livelock** | threads are running but no progress is made — distinct from deadlock, where they are stopped |
-| **steady state** | the regime after start-up costs are amortised. A benchmark too short to reach it measures set-up, not throughput |
-| **setup-dominated** | a measurement where construction/initialisation exceeds the work being timed. Caused two wrong conclusions here |
-| **spread** | half the range between fastest and slowest run. A "±0.02 s spread" means run-to-run variation, not measurement error |
-| **drift** | our local deviations from upstream source. Tracked in `DRIFT.md` |
-| **cherry-pick** | copying one upstream commit onto our branch without merging its whole history |
-| **ABI** | binary-level compatibility between separately-compiled code. Mismatches appear as link errors or crashes, not compile errors |
-| **SFINAE / `requires`** | compile-time feature detection. Used here to skip a function that does not exist on this standard library |
-| **keg-only** (Homebrew) | installed but deliberately not linked into `PATH`, so it shadows nothing |
-| **poured from bottle** (Homebrew) | installed as a precompiled binary rather than built here — relevant to provenance |
-| **strided round-robin** | work assigned as 1st→thread A, 2nd→thread B, 3rd→thread A… so *adjacent* pipeline stages land on *different* threads |
-| **oversubscription** | more worker threads than usable cores, so they contend rather than add throughput |
-
-### The "19 % wall cost" — clarified, since prior wording was sloppy
-
-Prior sessions called it a *regression*. That was the wrong word: nothing returned to an earlier
-state. It is a **trade**, and here is the whole of it.
-
-`qa_BasicFileIo` — one short, largely single-threaded test — took **5.46 s** with upstream's
-10 µs polling loop and **6.48 s** after our condvar fix. That single number is the entire cost.
-
-Answering the natural questions directly:
-
-- **Is it an artefact of testing?** Largely yes. It is one short test with little parallel work.
-- **Does it indicate a real-world bottleneck?** No, and the evidence runs the other way: the full
-  test suite got **2.6× faster**, scaling throughput **+26 %**, and the B210 ceiling **+22 %**.
-  Every workload with actual parallelism improved.
-- **Is the test↔runtime relationship known?** Partly. Four measurements, three strongly improved.
-- **Does it mean something is untested?** It reveals *why* the trade exists: the polling loop
-  bought 10 µs task-pickup latency by burning ~13 cores continuously. A workload that submits many
-  tiny tasks and has little parallel work is the one case where paying those cores is worth it.
-- **What changed, precisely?** Better: CPU 47×, suite time 2.6×, scaling +26 %, radio ceiling
-  +22 %, and an intermittent hang eliminated. Worse: this one test's wall time, by 1.02 s.
-
-**It is a latency-versus-throughput trade, not a bottleneck.**
-
-### Runtime graph reconfiguration — it IS a live capability
-
-Checked, not assumed. The scheduler handles `kEmplaceBlock`, `kRemoveBlock`, `kReplaceBlock`,
-`kEmplaceEdge`, `kRemoveEdge` and `kGraphGRC` as messages (`Scheduler.hpp:57-69`), so gr4 is
-designed to modify a graph **while it runs** — this is not merely a UI/config-time concern.
-
-**But the 8 GiB / 1.7 M page-reclaim measurement is of full graph construct-and-destroy cycles,
-which is a config-time cost (tier 2).** Whether *incremental* runtime edits leak is **untested**
-and would be tier 1. Those are different code paths; do not conflate them.
-
----
-
-## 2. INVARIANTS — settled. Do not re-open without a reason.
-
-Evidence for every one of these is in `BUILD_JOURNAL.md` (decisions D1–D7) and `RESULTS.md`.
-
-| # | Invariant | Why |
-|---|---|---|
-| I-1 | **Baseline is `origin/main` @ `44275ed`** (`4.0.0-RC2-13`), not RC1 | the three sibling branches are CI/math only; `main` is a strict superset |
-| I-2 | **Toolchain is Apple clang 21 + libc++.** Not GCC | builds the tree with **0 errors, 0 compiler warnings** under project-wide `-Werror`; matches brew UHD's own libc++ build |
-| I-3 | **All dependencies are vendored** in `vendor/`, SHA-pinned, built into the isolated prefix. Nothing from Homebrew | `MANIFEST.md`; `scripts/verify-vendor.sh` proves the committed trees reproduce |
-| I-4 | **Never `brew install`** | `/opt/homebrew` holds the owner's live 198-formula stack; transitive upgrades would perturb it |
-| I-5 | **`-j16` is fine**, despite `CLAUDE.md:433` mandating `-j6` | measured: peak 11.4 GiB across 16 compilers = 6 % of RAM |
-| I-6 | **Vendored files must be `git add -f`** | repo `.gitignore` rule `lib/` silently swallows all of `vendor/SoapySDR/lib/` |
-| I-7 | **`.gitattributes: vendor/** -text`** must stay | `core.autocrlf=input` otherwise rewrites vendored bytes and breaks verification |
-| I-8 | **The tree is MIT on paper, LGPL-derived in fact** | four cherry-picks postdate fair-acc's relicensing; fine while never distributed. `DRIFT.md` Category E |
-| I-9 | **fair-acc is NOT a tracking target, but it IS worth reading** | it reverted macOS ARM64 support (`ac59533`), so never merge it wholesale — cherry-pick individual fixes. The split is a licence dispute, not a technical one: gnuradio.org insists on MIT, fair-acc on LGPL-3.0. `gnuradio/gnuradio4` (our base) periodically forks from the better-staffed fair-acc, so our tree is somewhat stale by construction. See I-14 |
-| I-10 | **gr4 source drift must stay small** and every change logged in `DRIFT.md` | forward-compat is a stated objective; currently 14 files |
-| I-14 | **Check a high-impact finding against BOTH upstreams before assuming it is novel** — and before inventing a fix | `fair-acc/main` is better-staffed and sometimes ahead: it had already fixed the tag-ring sizing we had not. It is also *behind* on all five ring-buffer defects. `gnuradio/gnuradio4-core` (+`-library`, `-blocks`, `-studio`) is the split-repo direction gnuradio.org is moving to and is worth the same check. See `DRIFT.md` Category G |
-
-### ⚠ RF TRANSMISSION SAFETY — read before any hardware test
-
-The owner holds an amateur radio licence. **Claude does not, and cannot transmit on his behalf
-without his knowledge.**
-
-- **PRE-NOTIFY the owner of the exact frequency, bandwidth, gain and duty cycle of ANY test that
-  could key a transmitter, and wait for explicit approval.** Not "SDR testing" — the actual
-  numbers and the band they fall in.
-- **Default to RX-only.** A B210 and a HackRF both transmit. Configure test graphs so TX is
-  impossible by construction (no `SoapySink`, no TX antenna selected), not merely unused.
-- **Never widen frequency range, sweep gain, or enable TX to "improve coverage"** without the
-  owner deciding, band by band. Automating an emission does not make it legal, and a licensed
-  operator carries the consequences.
-- **Bands are not interchangeable.** GPS, aeronautical, emergency and public-safety allocations
-  are near-instantly attributable and can be catastrophic to jam. Being near an airport makes
-  this concrete rather than theoretical.
-- **Do not commit RF parameters** (frequency, gain, antenna, TX enable) to any file that could
-  reach a public repository. Keep them in a gitignored local config. A committed test that another
-  contributor edits becomes someone else's emission, on someone else's licence.
-
-This is why upstream's `qa_SoapySource` hardcodes an **RTL-SDR: it is receive-only.** That is
-plausibly a deliberate safeguard for unattended CI runners, not an oversight. Treat it as one.
-
-### Rules that bind (from the owner's original brief)
-
-- **No green-washing.** Never disable a test, add `|| true`, blanket `-Wno-error`, or narrow the
-  test set to make things pass. A diagnosed failure is a result; a hidden one is a lie.
-- **No network fetch** without explicit approval. Source only from hosts with active third-party
-  malware monitoring (this ruled out a self-hosted gitea mid-session).
-- **PUSH REGULARLY to `origin`.** An earlier session read "never push" as absolute and left 35
-  commits existing only on this machine for two days. That was wrong. The rule means **no pull
-  requests to upstream** (`gnuradio/gnuradio4`, `fair-acc/gnuradio4`) — it never meant "do not back
-  up your own work". See tier 0 below.
-  - **Do:** `git push -u origin <our-branch>` — our branches, our fork.
-  - **Never:** push `main`; force-push; push to `upstream-gr`/`upstream-fair` (fetch-only); open a
-    PR upstream.
-- **Ask before the first command that touches hardware** in a new session.
+- **No green-washing.** Never disable a test, or add `|| true`, or blanket `-Wno-error`, or 
+  narrow the test set to make things pass. A diagnosed failure is a result.
+- **No network fetch** without explicit discussion and approval. Source only from hosts with 
+  active third-party malware monitoring.
+- **PUSH REGULARLY to `origin`.**, which is a fork, at regular times and/or work increments.   
+- **no pull requests to upstream** (`gnuradio/gnuradio4*` and `fair-acc/gnuradio4`).
 - **Report regressions as prominently as wins.** Label anything not actually measured.
 
 ---
 
-## 3. Current state — what works
+## THIS SESSION: Project Owner's Statement (NEW)
+
+In this session, we want to understand the current state of the claim that `gnuradio4` removes 
+the process-blocking characteristics that I've worked around in the past: prior sessions indicate
+the old problems are alive and well on Mac/arm64, Here are the claims:  
+
+- https://www.gnuradio.org/news/2026-03-22-gr4-release-candidate-1/
+
+I don't think the GR or Fair-Acc teams are making baseless claims, but the claims are becoming 
+harder to fulfill because of unfortunate politics since that page was posted.  It's important 
+to review the 'competing' gnuradio4 projects:
+
+(A) GNURadio.org: https://github.com/gnuradio/gnuradio4 
+(B) FAIR Accelerator Center: https://github.com/fair-acc/gnuradio4 
+(C) Also GNURadio.org (componentized, more-recently-updated): 
+- https://github.com/gnuradio/gnuradio4-core   
+- https://github.com/gnuradio/gnuradio4-library   
+- https://github.com/gnuradio/gnuradio4-blocks   
+- https://github.com/gnuradio/gnuradio4-studio (early UI, may be "optional by necessity" for a running system).    
+
+This project was originally forked from (A) https://github.com/gnuradio/gnuradio4, but it's starting 
+to appear that - despite being the only one actively publicized - (A) is more _stale_ than (C) or (B).
+Overall, (B) may be best-architected at the current time, but is also no longer supporting Mac (due 
+to license politics) and is by far the most-likely to drift into unaligned needs of its sponsoring 
+organization.  
+No matter the choice, a lot of work will be needed to put the 'womm' in `gnuradio4-womm`.   
+And t`womm` is an acronym that defines the mission: _**"Works On My Machine."**_.
+
+**TASK: Please review the 'componentized' project (C) and compare it with the history and revisions of the 
+local (current) project - the latter will implicitly provide a picture of the state-of-affairs with (A)
+and (B).  Assess and recommend the path to success, and propose your design approach.** 
+
+The remainder of this document are primarily tech notes from prior sessions that should accellerate your
+view of (A) and (B).  
+
+## Known Issues and Cautions
+
+- Runtime graph reconfiguration is a runtime component (tier 1)
+  - gr4 is designed to modify a flowgraph **while it runs** — it is not UI-only.
+- **device-touching tests are NOT parallel-safe.** `DeviceRegistry::findOrCreate` shares one
+  device instance per kwargs, so `qa_SoapyIntegration` and `qa_SoapyLoopback` interfere under
+  `ctest -j`. Run them serially.
+- **measure the streaming interval, never total elapsed.** Device init (~2.5 s on a B210)
+  and graph construction both dwarf short runs. This error invalidated two separate measurements.
+- **the test suite is not deterministic.** `qa_BasicFileIo` varies 8.8 s → 48 s → timeout on
+  identical code. The 5-clean-run stability gate is currently unmeetable.
+
+## Current state — what works
+
+These items were current in the recent past, maintain truth.
 
 - Builds clean: 1850 targets, ~600 s at `-j16`, **0 errors, 0 compiler warnings**.
 - **ctest 101/102 (serial).** The one failure is `qa_SoapySource`'s "gain" test — **cause is an
   out-of-range gain value, NOT an AGC defect** (an earlier session claimed the latter; withdrawn).
-  On a B2xx, RX2 tops out at ~76 dB and RX/TX at ~88 dB; an out-of-range value returns `nan`.
+  On a B2xx, RX2 tops out at ~76 dB and TX/RX at ~88 dB; an out-of-range value returns `nan`.
   Undiagnosed at source level; do not treat it as a SoapyUHD bug. Its two *missing-device*
   failures (rtlsdr, lime) now skip cleanly.
 - **B2xx RF defaults that are known-good:** RX gain **20 dB**, centre **2401 MHz** (legal for
-  amateur and WiFi). Antenna gain ranges differ — RX2 ≠ RX/TX — so quote the probe section, not
+  amateur and WiFi). Antenna gain ranges differ — RX2 ≠ TX/RX (the device spells it TX/RX; "RX/TX" is not a name it knows) — so quote the probe section, not
   just a number.
 - **Run ctest SERIALLY** (invariant I-11). Device tests are not parallel-safe.
 - Five upstream correctness fixes cherry-picked (watchdog leak, message-path deadlock,
@@ -227,7 +153,134 @@ plausibly a deliberate safeguard for unattended CI runners, not an oversight. Tr
 - **Hardware reaches the radio**: `SoapySDRUtil --probe="driver=uhd"` initialises a B210 (FPGA
   16.0, fw 8.0). All three enumerate.
 
-### Performance, measured
+
+### ★ CONFIRMED — solid results, 2026-07-27 evening
+
+Stated separately because this project has accumulated far more retractions than confirmations, and
+these are neither hypothetical nor single-trial. Full detail in `RESULTS.md` Phase 9,
+`DRIFT.md` Category H.
+
+| # | Result | How it is known |
+|---|---|---|
+| C-1 | **Two-channel receive works.** First time in this project. | Owner read the front-panel LEDs on **all three** units, A and B frontends, both on `TX/RX` — out-of-band evidence no software defect can fake — agreeing with independent per-channel counters. |
+| C-2 | **Two-channel receive had NEVER worked, for two reasons, both now fixed.** | H-1: `start()` called `activate()` bare, and UHD refuses "stream now" on a multi-channel streamer. Reproduced **outside gr4** with `SoapySDRUtil --channels="0,1"`. H-2: `setHardwareTime` passed `nullptr` for an empty event → `strlen(nullptr)` → SIGSEGV, found in the macOS crash report. H-2 was unreachable until H-1 was fixed. |
+| C-3 | **92.16 MS/s across 3 radios / 6 channels. Ratio 1.0000. Zero overflows. 43 s.** | 43 one-second samples per channel from `CountingSink`, three separate processes, `WOMM_THREADS=8` each. CPU sampled independently: ~42 % user, ~15 % sys, **~43 % idle**. |
+| C-4 | **A B2xx does 30.72 MS/s aggregate on two channels** (15.36 per channel). | UHD's own refusals: MCR 40 rejected outright, MCR pinned 30.72 silently delivers 15.36, auto-MCR fails at `activate()`. Matches the owner's Nyquist reasoning and the long-recorded "~32 MS/s" figure, which is an **aggregate per radio**. |
+| C-5 | **`UNKNOWN_PPS`, not `PPS`, is the multi-device sync primitive.** | `vendor/SoapyUHD/SoapyUHDDevice.cpp:873-874` — `"PPS"` → `set_time_next_pps()`, `"UNKNOWN_PPS"` → `set_time_unknown_pps()`. Only the latter waits for a PPS *transition* first, so every radio latches the same edge. |
+| C-6 | **The antenna is `TX/RX`, never `RX/TX`.** | Device: `Antennas: TX/RX, RX2`. Our own RX-only allow-list had it reversed and would have rejected the correct name; unnoticed because every prior run used RX2. Corrected in both harnesses; verified receiving. |
+| C-7 | **There is no "demand lock on start" flag.** Poll `ref_locked`. | SoapyUHD forwards `set_clock_source` to UHD with no lock logic; Ettus document loop-until-locked precisely because nothing can be set. Sampling the sensor once reads `false` on a good reference. |
+| C-8 | **SoapyUHD/UHD are already correctly paired.** | `MANIFEST.md:99` — vendored SoapyUHD is master `2a5d381f`, 20 commits past the 0.4.1 tag, chosen because master adds UHD 4.8+ support. Our two patches total 31 lines of build hygiene, no API shims. Brew's UHD stays: the owner accepts brew where the formula has a solid build chain with many eyes on it. **Closed as a decision, not debt.** |
+
+**Retracted this session, so nobody rebuilds them:** `RESULTS.md` §8.6 (global ingest cap) and §8's
+bottleneck claim; and **my cross-process count-difference drift test**, which reports "wanders, no
+offset" for locked *and* free-running pairs alike — the log-sampling skew between independent
+processes is ~300 000 samples against a ~900-sample effect. Lock is established by the device's
+`ref_locked` sensor; **epoch** alignment needs the device timestamps in the timing tags, and host-side
+counters cannot get there at any sampling discipline.
+
+### Next-step ordering — REWRITTEN 2026-07-27 (prior to 1130 Pacific)
+
+This is the next-step-list from the prior session: some items are done, some were deferred, and 
+items' priorities can change as the result of a turn.
+
+1. ~~Tag-buffer sizing~~ **DONE.** Capped at `min(min_size, kDefaultBufferSize)`, matching
+   fair-acc. Peak RSS **6.92 → 2.27 GiB**, throughput unchanged. See `DRIFT.md` G-6.
+1b. ~~THE TIER-1 BOTTLENECK IS SDR INGEST~~ **WITHDRAWN 2026-07-27 evening. There is no ingest
+   cap.** Three radios x two channels sustain **92.16 MS/s aggregate, ratio 1.0000 to the hardware
+   maximum, zero overflows, 43 s** — 2.1x the "~40-44 MS/s however it is divided" figure, and at
+   the physical limit of the hardware. `RESULTS.md` §8.6 and §8's bottleneck claim are both
+   withdrawn; see §9.6. The old number came from a configuration that was single-channel at DSP
+   depth 8 in one graph; the new one is two-channel at depth 0 in three processes. **Refuted, but
+   not attributed** — three variables moved at once. Attributing it is E0.1, still open.
+
+1c. ~~Set `clock_source`/`time_source` to `external`~~ **DONE, and it works on 2 of 3 radios.**
+   `WOMM_EXTCLK=1` sets both. `31FE7A2` and `32FCD05` report `ref_locked=true` and stream full
+   rate; **`32FCCF7` reads `false` after 3000 ms and refuses to run** — isolated to one unit with
+   two controls on the same code path, so it is hardware/cabling. Bisect by swapping its 10 MHz
+   cable with a known-good one. See `RESULTS.md` §9.7.
+
+2. **`B_max` hardware harness (tier 1)** — built, `blocks/sdr/src/womm_bmax.cpp`; still needs the
+   ballast sweep, and **now has a valid configuration to run at**: 3 radios x 2 channels =
+   92.16 MS/s live ingest with **~43 % of the machine idle**. `B_max` = the largest M synthetic
+   ballast chains with zero overflows for T seconds. This is the tier-1 linear-proportionality
+   yardstick and it is now answerable. RX-only by construction — the TU must not include
+   `SoapySink`, and `assert_no_tx.cmake` on the linked binary is the check.
+3. **Make the harness survive a diagnosable misconfiguration.** Every configuration error found
+   this session terminated the process via an *uncaught* exception out of the scheduler
+   (`Scheduler.hpp:496`) rather than reporting: bad MCR, unlocked reference, `activate()`
+   STREAM_ERROR. Refusing to run is right; crashing is not. Same defect shape as the old
+   overflow-throw item.
+4. ~~Verify the B210 ceiling~~ **DONE, both configurations.** Single channel sustains **~43 MS/s**
+   (the old 32.5 figure was an artefact of a rate list that never bracketed 32-56). **Two channels
+   cap at 15.36 MS/s each, 30.72 MS/s aggregate per radio** — UHD refuses `master_clock_rate`
+   above 30.72 MHz with two RX channels and the per-channel rate is MCR/decimation. That is the
+   "~32 MS/s with two front ends" figure, it is an **aggregate per radio**, and it is correct.
+   Owner confirms the Nyquist relation to the sample clock. See `RESULTS.md` §7.1 and §9.4.
+5. **Serialise device tests** — ctest `RESOURCE_LOCK` or a fixture; upstream-shaped, no patch.
+6. Deferred: default pool size is `hardware_concurrency()` = 24 on this machine, which puts 8
+   workers on utility cores; 16 threads measured faster than 24. `PORTABILITY.md`.
+
+**Do NOT spend time on:** `_nWorkersInWork` cache-line padding or the graph-global `progress`
+counter. Profiled at ≤2.5 % and not visible respectively — both are amortised over large
+per-`work()` chunks. Revisit only if something else stops dominating.
+
+
+## Prior deliverables and where things live
+
+Update as necessary.  Most of these are or should be updated.
+
+| File | Contents |
+|---|---|
+| `BUILD_JOURNAL.md` | append-only decisions D1–D7, with rationale and how to reverse |
+| `RESULTS.md` | all measurements, including the retraction in Phase 3.5c |
+| `DRIFT.md` | every local deviation; Category E is the cherry-pick provenance + licensing |
+| `MANIFEST.md` | dependency provenance, §8 upstream sync policy |
+| `scripts/env.sh` | the only thing that activates the prefix |
+| `scripts/build-prefix.sh` | builds all vendored deps into the prefix |
+| `scripts/verify-vendor.sh` | proves committed vendor trees reproduce |
+| `scripts/vendor.sh` | re-fetches vendored deps at pinned SHAs |
+
+Still to write: `scripts/build.sh`, `scripts/verify.sh`, `PORTABILITY.md`.
+
+---
+
+## INVARIANTS
+
+Discuss with user before varying ferom these practices.
+
+| # | Invariant | Why |
+|---|---|---|
+| I-2 | **Toolchain is Apple clang 21 + libc++.** Not GCC | builds the tree with **0 errors, 0 compiler warnings** under project-wide `-Werror`; matches brew UHD's own libc++ build |
+| I-3 | **All dependencies are vendored** in `vendor/`, SHA-pinned, built into the isolated prefix. Nothing from Homebrew | `MANIFEST.md`; `scripts/verify-vendor.sh` proves the committed trees reproduce |
+| I-4 | **Never `brew install`** without asking first. | `/opt/homebrew` holds the owner's live 198-formula stack; transitive upgrades would perturb it. |
+| I-5 | **`-j16` is fine**, despite `CLAUDE.md:433` mandating `-j6` | measured: peak 11.4 GiB across 16 compilers = 6 % of RAM. |
+| I-6 | **Vendored files must be `git add -f`** | repo `.gitignore` rule `lib/` silently swallows all of `vendor/SoapySDR/lib/` |
+| I-7 | **`.gitattributes: vendor/** -text`** must stay | `core.autocrlf=input` otherwise rewrites vendored bytes and breaks verification |
+| I-8 | **The tree is MIT on paper, LGPL-derived in fact** | four cherry-picks postdate fair-acc's relicensing; fine while never distributed. `DRIFT.md` Category E |
+| I-9 | **THIS MIGHT CHANGE:** Baseline is `origin/main` @ `44275ed`** (`4.0.0-RC2-13`), not RC1 | the three sibling branches are CI/math only; `main` is a strict superset |
+| I-10 | **fair-acc is NOT a tracking target, but it IS worth reading** | it reverted macOS ARM64 support (`ac59533`), so never merge it wholesale — cherry-pick individual fixes. The split is a licence dispute, not a technical one: gnuradio.org insists on MIT, fair-acc on LGPL-3.0. `gnuradio/gnuradio4` (our base) periodically forks from the better-staffed fair-acc, so our tree is somewhat stale by construction. See I-14 |
+| I-14 | **Check a high-impact finding against ALL upstreams before assuming it is novel** — and before inventing a fix | `fair-acc/main` is better-staffed and sometimes ahead: it had already fixed the tag-ring sizing we had not. It is also *behind* on all five ring-buffer defects. `gnuradio/gnuradio4-core` (+`-library`, `-blocks`, `-studio`) is the split-repo direction gnuradio.org is moving to and is worth the same check.  They have also stopped supporting
+the mac platform. See `DRIFT.md` Category G |
+
+
+## PLACEHOLDER — HANDOFF.md revisionsfill before session end
+
+For the next session.
+
+<!-- Complete a revised HANDOFF.md at ~70% context. -->
+
+
+
+
+## - - - REFERENCE ONLY - - -
+
+Below here: not 'required reading' but _search this for the name a module before working on it_.  
+
+## APPENDIX: (CLOSED or STALE or WRONG) and USEFUL
+
+The items below are **old**, many are stale, some are wrong, all are **educational**. 
+
+### (REF) Performance, measured
 
 **⚠ The whole earlier curve is retracted.** It sized the pool to the chain count, so every point
 varied workload *and* decomposition together, and its 1-chain point was a different regime (one job,
@@ -249,16 +302,14 @@ one cell per invocation (`--chains N --threads M --window SEC`).
 
 ---
 
-## 4. OPEN — the live problem
-
-### 4.1 ~~THE BUG~~ — RESOLVED, was my harness. See RESULTS.md Phase 5.
+#### (REF)  ~~THE BUG~~ — RESOLVED, was my harness. See RESULTS.md Phase 5.
 
 **Not a gnuradio4 defect.** `kDurationSec=2.0` was shorter than the B210's ~2.5 s bring-up, so
 `requestStop()` fired before the reader thread was scheduled. End-to-end now works: B210 sustains
 **16 MS/s complex lossless**, saturating at ~25-27 MS/s. Original text kept below for the
 ruled-out list, which remains useful.
 
-#### (historical) `SoapySource` delivers zero samples
+#### (REF) (historical) `SoapySource` delivers zero samples
 
 The block yields **0 samples** from a real B210 *and* from the synthetic `LoopbackDevice`. A
 `ConstantSource` through the identical harness does 573 Msps, so the measurement is sound.
@@ -302,7 +353,7 @@ Why this was never caught upstream: every Soapy file is excluded from all CI
 `qa_SoapySource` needs an absent RTL-SDR; `qa_SoapyIntegration` self-skips; `qa_SoapyLoopback`
 tests the raw device, not the block. The block-level path appears never to have run to completion.
 
-### 4.2 ★ ROOT CAUSE FOUND — macOS thread-pool polling burns ~13 cores
+### (REF) ★ ROOT CAUSE FOUND — macOS thread-pool polling burns ~13 cores
 
 **The headline result. Read RESULTS.md "ROOT CAUSE" before anything else.**
 
@@ -333,7 +384,7 @@ proven, since §0 was measured on GNU Radio 3.x.
 
 Experiment reverted; `thread_pool.hpp` is byte-identical to upstream.
 
-### 4.3 ~~Graph lifecycle leaks memory~~ — WITHDRAWN. There is no leak.
+### (REF)  ~~Graph lifecycle leaks memory~~ — WITHDRAWN. There is no leak.
 
 Measured directly: a **single** 16-chain graph cycle peaks at **6.92 GiB**. The recorded 8 GiB
 across *seven* cycles is therefore consistent with memory being released every cycle — a leak would
@@ -349,17 +400,20 @@ buffers stay on the copying path and were untouched by the Category G buffer fix
 **Open, tier 2:** decouple tag-buffer sizing from stream-buffer sizing. Nothing here needs 65536
 tags in flight per port. See `RESULTS.md` §6.6.
 
-### 4.4 Deferred, in priority order
+### (REF) Deferred, in priority order
 
 1. Parallel scaling: 2.07× from 16 chains. Suspects, untested: strided block→thread partitioning
    (`Scheduler.hpp:1378-1385`), absent Darwin QoS (`thread_affinity.hpp`, 15 no-op sites),
    macOS mirror-`memcpy` (`CircularBuffer.hpp:352-378`).
-2. UHD provenance — brew's `uhd 4.10` is a poured bottle, the one non-source-verified dependency.
+2. ~~UHD provenance~~ **CLOSED 2026-07-27 — accepted, not debt.** Owner: brew is fine where the
+   formula has a solid build chain with many eyes on it, and UHD qualifies. A source build would
+   also drag in Boost + libusb (the prefix has no real Boost — only Boost.UT's `ut.hpp`), for
+   provenance only. Deliberate exception to I-3.
 3. `PORTABILITY.md` not yet written.
 
 ---
 
-## 5. Mistakes already made — do not repeat
+### (REF) Mistakes already made — do not repeat
 
 Recorded because each cost real time.
 
@@ -381,86 +435,5 @@ Recorded because each cost real time.
 
 ---
 
-## 6. Deliverables and where things live
 
-| File | Contents |
-|---|---|
-| `BUILD_JOURNAL.md` | append-only decisions D1–D7, with rationale and how to reverse |
-| `RESULTS.md` | all measurements, including the retraction in Phase 3.5c |
-| `DRIFT.md` | every local deviation; Category E is the cherry-pick provenance + licensing |
-| `MANIFEST.md` | dependency provenance, §8 upstream sync policy |
-| `scripts/env.sh` | the only thing that activates the prefix |
-| `scripts/build-prefix.sh` | builds all vendored deps into the prefix |
-| `scripts/verify-vendor.sh` | proves committed vendor trees reproduce |
-| `scripts/vendor.sh` | re-fetches vendored deps at pinned SHAs |
 
-Still to write: `scripts/build.sh`, `scripts/verify.sh`, `PORTABILITY.md`.
-
----
-
-## 7. PLACEHOLDER — fill before session end
-
-<!-- Complete these at ~90% context. Leave the headings; replace the bodies. -->
-
-### 7.1 Outcome of the activation diagnostic — RESOLVED
-Instrumenting `ioReadLoop` showed `state=STOPPED` at a 2 s duration and `state=RUNNING` with
-`ret=8192` reads at 12 s. **My harness, not gnuradio4.** End-to-end now works; see RESULTS.md
-Phase 5. All instrumentation reverted, `SoapySource.hpp` byte-identical to upstream.
-
-**B210 sustains 16 MS/s complex lossless** through 8 DSP stages; saturates ~25-27 MS/s where UHD
-reports overflow. That ceiling is NOT the DSP layer (168 Msps single-chain) — it is
-USB/UHD/`ioReadLoop`.
-
-### 7.2 New invariants
-- **I-11: device-touching tests are NOT parallel-safe.** `DeviceRegistry::findOrCreate` shares one
-  device instance per kwargs, so `qa_SoapyIntegration` and `qa_SoapyLoopback` interfere under
-  `ctest -j`. Run them serially.
-- **I-12: measure the streaming interval, never total elapsed.** Device init (~2.5 s on a B210)
-  and graph construction both dwarf short runs. This error invalidated two separate measurements.
-- **I-13: the test suite is not deterministic.** `qa_BasicFileIo` varies 8.8 s → 48 s → timeout on
-  identical code. The 5-clean-run stability gate is currently unmeetable.
-
-### 7.3 Next-step ordering — REWRITTEN 2026-07-27, the old list is done or void
-
-Items 1 (condvar fix) and 4's scaling entry are complete; §4.2's fix landed and the scaling plateau
-turned out to be the buffer, see `DRIFT.md` Category G and `RESULTS.md` §6.
-
-1. ~~Tag-buffer sizing~~ **DONE.** Capped at `min(min_size, kDefaultBufferSize)`, matching
-   fair-acc. Peak RSS **6.92 → 2.27 GiB**, throughput unchanged. See `DRIFT.md` G-6.
-1b. **★ THE TIER-1 BOTTLENECK IS NOW SDR INGEST, NOT DSP.** Total ingest saturates at
-   **~40-44 MS/s however it is divided** — 1 radio at 43 passes, 3 at 12 (36 total) pass, 3 at 16
-   (48 total) fail. Against 2400 Msps of DSP that is ~1/55th of the machine. **Not USB** (three
-   separate XHCI controllers). Not yet localised: suspect a serialising lock in UHD/SoapyUHD, then
-   `DeviceRegistry`, then IO-pool thread count, then per-read overhead on fixed 8192-sample reads.
-   Start with `sample` on a 3-radio run. See `RESULTS.md` §8.
-
-1c. **Set `clock_source`/`time_source` to `external`.** The B210s are on an **Octoclock-G**
-   (10 MHz + PPS, GPS-disciplined) and the device advertises `external` and `gpsdo` for both, but
-   the harness leaves them unset — so every multi-radio figure so far is **free-running**, and
-   nothing measured says anything about inter-radio time alignment. Two settings, already exposed
-   at `SoapySource.hpp:48,60`.
-
-2. **`B_max` hardware harness (tier 1)** — built, `blocks/sdr/src/womm_bmax.cpp`; still needs the
-   ballast sweep. N radio chains + M synthetic ballast chains in ONE graph
-   and scheduler; `B_max` = the largest M with zero overflows for T seconds. Radios alone cannot
-   load this machine (3 × ~32 MS/s against 2416 Msps), so they serve as a *deadline probe*. A
-   threshold resolvable by bisection beats a noisy Msps figure. RX-only by construction — the TU
-   must not include `SoapySink`, and the `nm -C` gate on the linked binary is the check.
-3. **Make the B210 sweep survive an OVERFLOW.** The 56 MS/s point dies on an *uncaught* exception
-   out of the scheduler (`SoapySource.hpp:785`, surfaced at `Scheduler.hpp:486`). The watchdog
-   rework covers a wedged graph, not a throw. Needed **before** `B_max`, which deliberately
-   bisects past the overflow threshold.
-4. ~~Verify the single-channel B210 ceiling~~ **DONE — the 32.5 MS/s ceiling was wrong.**
-   Single-FE sustains **~43 MS/s** (44 requested, 43.28 achieved, ratio 0.984). The old figure was
-   an artefact of the sweep's rate list `{1,4,8,16,32,56}`, which never bracketed anything between
-   32 and 56. Mechanism, per the owner: an **LO / front-end sync** constraint, per radio — two FEs
-   is what caps a B2xx near 32; **nothing to do with USB bandwidth**. Anything above ~40 MS/s is a
-   marginal band (50 → 0.971 BEHIND; 40 failed once while 44 passed, non-monotonic, so stochastic
-   rather than a limit). See `RESULTS.md` §7.1.
-5. **Serialise device tests** — ctest `RESOURCE_LOCK` or a fixture; upstream-shaped, no patch.
-6. Deferred: default pool size is `hardware_concurrency()` = 24 on this machine, which puts 8
-   workers on utility cores; 16 threads measured faster than 24. `PORTABILITY.md`.
-
-**Do NOT spend time on:** `_nWorkersInWork` cache-line padding or the graph-global `progress`
-counter. Profiled at ≤2.5 % and not visible respectively — both are amortised over large
-per-`work()` chunks. Revisit only if something else stops dominating.
