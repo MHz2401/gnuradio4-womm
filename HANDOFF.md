@@ -43,17 +43,25 @@ Machine: M2 Ultra, 16 P + 8 E cores, 192 GiB, macOS 26.5.2, **16 KiB pages**, 12
 | **2** | radio off | UI dev; blocks; UI/reconfiguration paths |
 | **3+** | everything else | upstream contribution, public-repo polish |
 
-- **"Fully operational" means processing capacity approximately linear-proportional to hardware
-  capacity.** Until that holds, assume undiscovered surprises: yesterday's independent issue becomes
-  tomorrow's dependency and vice versa. **Do not treat any tier as finished early.**
-- **Upstream contribution is tier 3 or lower** — not for lack of value, but because we are not done
-  with a working local system, and premature contribution locks in an incomplete picture.
-- **The soak test is the yardstick for "done"** in both tier 1 and tier 2, judged against the
-  linear-proportionality criterion above.
-- **Making things work at capacity outranks formal QA for a public repo.**
+**Tier-1 acceptance (owner, 2026-07-28 — `BUILD_JOURNAL.md` D8):** *no loss of lock, and no
+**unanticipated** overflow or underflow, during operations.* It applies particularly to **channel
+switching, calibration, and graphical display / UI operations**.
 
-⚠ Both criteria in bold above are currently **unmeasurable as written** — see `SPRINT.md` Q1 and Q2.
-There is no soak test in the repo and no definition of one.
+**"Unanticipated" is load-bearing.** Some operations *must* drop samples — retuning among them — and
+a drop around a deliberate reconfiguration is expected behaviour, not a defect. The criterion is
+about surprises, not about zero drops.
+
+This **replaces** "processing capacity approximately linear-proportional to hardware capacity",
+withdrawn by its own author: four radios now run at full capacity without denting the machine, so
+capacity is no longer the question. **"The soak test is the yardstick"** is retired with it, as
+redundant — it meant an extended run at capacity, which is done.
+
+- **A UI is in scope, and "Usable UI" is a tier-1 item** (D10). ⚠ The term is **coined but not yet
+  defined** — do not build against it until it is. Defining it is `SPRINT.md` S2-5.
+- **Upstream contribution is intended but subordinate** (D9): no consideration in support of a PR
+  may constrain the implementation of "Works on My Mac".
+- **Do not treat any tier as finished early.** Yesterday's independent issue becomes tomorrow's
+  dependency and vice versa.
 
 ---
 
@@ -125,6 +133,12 @@ Two qualifiers on (C)'s macOS story: `-blocks` and `-library` have **no macOS CI
 `-blocks` CI builds against a prebuilt *Linux container* SDK image. Our SDR path lives in `-blocks`,
 where SDR is `GR4_ENABLE_SDR=OFF` and CI-untested.
 
+**★ CAMP CHOSEN (owner, 2026-07-28 — `BUILD_JOURNAL.md` D9): gnuradio.org.** That means MIT, and
+trees (A)/(C). Near-term policy is **get things done first** — work with LGPL code where it is the
+fast path, but **do not irrevocably bake it in**. `DRIFT.md` Category E already keeps every
+fair-acc pick separately revertible; that property must not be lost. The owner prefers MIT to
+LGPL-3.0, but **"Works on My Mac" outranks the licence preference** for now.
+
 **Consequence:** no upstream will converge with this fork. (A) is over; (C) is (A) plus packaging;
 (B) has the code but deleted the platform we need — and our two largest wins *are* macOS enablement.
 Worth harvesting from (C): its **installed-SDK boundary**, and **`-control-plane`** (a REST service
@@ -178,9 +192,13 @@ two hypotheses were 300× *closer* than the noise.
 ## Current state
 
 - Builds clean: 1850 targets, ~600 s at `-j16`, **0 errors, 0 compiler warnings** under `-Werror`.
-- **ctest 101/102 (serial).** The one failure is `qa_SoapySource`'s gain test — cause is an
-  **out-of-range gain value, not an AGC defect**. On a B2xx, RX2 tops out at ~76 dB and `TX/RX` at
-  ~88 dB; out of range returns `nan`. Quote the probe section, not a remembered number.
+- **ctest 101/102 (serial), and the one failure is NOT a defect.** `qa_SoapySource`'s gain test
+  hardcodes an RTL-SDR and a gain around 1000 — out of range for a B210, which the test was never
+  written for. Upstream's tests cover one platform, and **gain has no universal convention**: a
+  value that suits an RTL-SDR suits neither a B2xx nor a HackRF. On a B2xx, RX2 tops out at ~76 dB
+  and `TX/RX` at ~88 dB; out of range returns `nan`. Quote the probe section, never a remembered
+  number. Withdrawn as a work item by the owner; the residue is a documentation task (`SPRINT.md`
+  S2-4).
 - **Run ctest SERIALLY.** Device tests are not parallel-safe: `DeviceRegistry::findOrCreate` shares
   one device instance per kwargs, so `qa_SoapyIntegration` and `qa_SoapyLoopback` interfere.
 - Five upstream correctness fixes cherry-picked from fair-acc; our own fixes are in `DRIFT.md`

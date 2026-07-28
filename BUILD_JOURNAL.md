@@ -139,3 +139,70 @@ command run here was read-only (`list`, `info`, `--prefix`, `--version`, `autore
 Build 603 s, 1850 targets, 0 errors, **0 compiler warnings**, peak RSS 11.4 GiB across 16 jobs.
 Tests 100/101. The single failure, `qa_SoapySource`, is environmental: the test hardcodes
 `{"device", "rtlsdr"}` and has no skip guard. B210 sample streaming confirmed end to end.
+
+---
+
+### D8. Tier-1 acceptance criterion replaced — capacity is no longer the question
+
+**Decided by the owner, 2026-07-28.** Supersedes the "processing capacity approximately
+linear-proportional to hardware capacity" criterion, which the owner wrote himself and now
+withdraws: *"it made sense in a more pessimistic era, but that era is over — four radios currently
+run at full capacity without making much of a dent in the system performance meter."*
+
+**New tier-1 criterion:** *no loss of lock, and no **unanticipated** overflow or underflow, during
+operations.* It applies particularly to **channel switching, calibration, and graphical
+display / UI operations** — all of which now appear to be within reach for the first time.
+
+The word **unanticipated** is load-bearing. Some operations *must* drop samples — retuning among
+them — and a drop around a deliberate reconfiguration is expected behaviour, not a defect. The
+criterion is about surprises, not about zero drops.
+
+**"The soak test is the yardstick for done" is retired as redundant** — it meant an extended run at
+full capacity, which has been done, and it is subsumed by the criterion above.
+
+**The "5-clean-run stability gate" is met and closed.** It was a prior agent's
+reasonable-at-the-time goal — all radios for 10 s without a crash, five times running — set without
+knowing that only one channel was ever lit. It is no longer "currently unmeetable".
+
+*Reverse:* nothing to reverse; this is a goal change, not a code change.
+
+---
+
+### D9. Camp chosen — gnuradio.org, with LGPL permitted as a near-term expedient
+
+**Executive decision by the owner, 2026-07-28.**
+
+- **If we must choose sides, we are in the gnuradio.org camp** — and we probably will have to,
+  eventually. That means MIT, and trees (A)/(C).
+- **Near term: get things done first.** Work with LGPL code where it is the fast path to something
+  working, but **do not irrevocably bake it in**.
+- The owner prefers MIT to LGPL-3.0, but **"Works on My Mac" is the prevailing principle** and
+  outranks the licence preference for now.
+
+**Already satisfiable.** `DRIFT.md` Category E lists the five fair-acc cherry-picks individually and
+records that reverting the four post-relicense ones restores an MIT-only tree. So "not baked in" is
+a property we currently have and must not lose — every future LGPL-derived change must stay
+separately revertible and be listed there.
+
+**Upstream contribution is intended**, but with a hard constraint: *no consideration in support of a
+PR or contribution may constrain the implementation of the "Works on My Mac" goal.*
+
+*Reverse:* revert the four post-relicense picks per `DRIFT.md` Category E to restore MIT-only.
+
+---
+
+### D10. A UI is now in scope, and "Usable UI" is a tier-1 item
+
+**Decided by the owner, 2026-07-28.** Previously the owner "did not dare to hope". Expectations have
+been reset by this sprint's results, and the question has changed from *whether* to *what*.
+
+⚠ **"Usable UI" is coined but NOT YET DEFINED.** It is recorded here as a term awaiting a
+definition, per the standing rule that shorthand must carry its definition or a pointer to one —
+see `HANDOFF.md`, "WHAT DO YOU MEAN BY '19 % WALL COST'". **Defining it is the next discussion, and
+that definition is a deliverable, not a preamble.** Until then, do not build against it.
+
+The owner, on scope: *"It's not scope creep until you have enough information to set expectations,
+and mine have been reset."* And on the finish line: *"I can't define 'Works on my Mac' at this time,
+but I'll know it when I see it"* — while being certain it requires a Usable UI.
+
+*Reverse:* n/a — scope decision.

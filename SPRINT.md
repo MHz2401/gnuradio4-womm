@@ -77,27 +77,40 @@ failed because its two hypotheses were 300x *closer* than the noise.
 
 ---
 
-## Sprint 2 — "make the guarantees structural, and decide the upstream"
+## Sprint 2 — "operations under load, without surprises"
 
-**Proposed goal:** convert sprint 1's *observed* properties into *guaranteed* ones, and take the
-upstream decision that sprint 1 deferred.
+**Goal (owner, D8):** *no loss of lock, and no **unanticipated** overflow or underflow, during
+operations* — particularly **channel switching, calibration, and UI operations**. This replaces the
+linear-proportionality criterion, which the owner withdrew: four radios now run at full capacity
+without denting the machine, so capacity is no longer the question.
+
+**"Unanticipated" is load-bearing.** Retuning *must* drop samples. A drop around a deliberate
+reconfiguration is expected behaviour; the criterion is about surprises, not about zero drops. Part
+of S2-3 is drawing that line explicitly, because nothing currently does.
 
 ### Backlog, ordered
 
 | # | Item | Definition of done |
 |---|---|---|
-| S2-1 | **Define the cross-process arming barrier.** It is currently undefined — see `RESULTS.md` §9.13. It exists as code in `womm_bmax.cpp:233-246` and nowhere else | a written contract: what it guarantees, the bound on the last-arrival window, failure modes, and what happens on timeout. Then an implementation meeting it, then PPS-edge agreement demonstrated across ≥5 runs |
-| S2-2 | **Sensible tag defaults.** `tag_interval` is now sample-derived (§9.12); the remaining question is what the *default* should be for a block that does not know its rate at construction | a default that yields ~1 tag/s at any rate without the caller computing it, and a `qa_` test pinning the interval in samples |
-| S2-3 | **Soak.** Every tier-1 figure so far is ≤60 s | 4 radios × 2 channels × 1 h, zero overflows, epoch offsets bounded throughout, RSS flat |
-| S2-4 | **Upstream decision.** Sprint 1 established the landscape but took no decision | the patch series of `DRIFT.md` restructured into portability classes, `scripts/replay-onto.sh` reproducing `HEAD` from the base exactly, and a recorded decision on (A)/(B)/(C) |
-| S2-5 | **`qa_SoapySource` gain test** — the one ctest failure, 101/102 | diagnosed at source level, or a stated reason it is not worth fixing |
+| S2-1 | **Define the cross-process arming barrier**, then implement it. Currently undefined — `RESULTS.md` §9.13; it exists as code in `womm_bmax.cpp:233-246` and nowhere else | a written contract — what it guarantees, the bound on the last-arrival window, failure modes, timeout behaviour — then an implementation meeting it, then PPS-edge agreement across ≥5 runs |
+| S2-2 | **Tag defaults.** `tag_interval` is sample-derived (§9.12); the open part is the *default* for a block that does not know its rate at construction | ~1 tag/s at any rate without the caller computing it, and a `qa_` test pinning the interval in samples |
+| S2-3 | **★ Operations under load** — the new tier-1 criterion made testable | an enumerated list of which operations may legitimately drop samples and which may not; then retune, gain change and settings change exercised on 4 radios × 2 channels at capacity, with every drop attributable to an anticipated cause and lock held throughout |
+| S2-4 | **Document parameter conventions per platform** — replaces the withdrawn gain-test item | gain, antenna and rate conventions recorded for B210 / RTL-SDR / HackRF, with ranges and the fact that **gain has no universal convention** stated plainly |
+| S2-5 | **Define "Usable UI"** (owner, D10 — now a tier-1 item) | a written definition. It is coined but undefined; per the standing jargon rule, **do not build against it until it is defined.** Separate discussion; the definition is the deliverable |
 
 ### Explicitly NOT in sprint 2
 
 - **`B_max`.** Owner: already done to the practical limit. Some actions — retuning among them —
   *must* drop samples; a ballast bisection past that point measures the wrong thing.
 - **UHD from source.** Closed as a decision, not debt: brew is acceptable where the formula has a
-  solid, well-reviewed build chain. A source build would drag in Boost + libusb for provenance only.
+  solid, well-reviewed build chain.
+- **The `DRIFT.md` patch-series restructure.** Demoted by D9: near-term policy is get-things-done
+  first. The property it was meant to protect — LGPL changes staying separately revertible — is
+  already held by `DRIFT.md` Category E and must simply not be lost.
+- **`qa_SoapySource`'s gain test.** Withdrawn by the owner: not a defect. The test hardcodes an
+  RTL-SDR and a gain of ~1000, which is out of range for a B210 — hardware the test was never
+  written for. Upstream's tests cover one platform, and gain has no universal convention. Folded
+  into S2-4 as a documentation task.
 - Anything automating **transmit**. Standing rule; the owner keys the transmitter.
 
 ### Open questions carried forward
@@ -109,26 +122,20 @@ question. It was replaced, not explained, and that is sufficient.
 - Is the 39.8 ms epoch agreement stable across launch timings, or an artefact of this stagger? (S2-1)
 - What explains the residual 4.1 Hz between radios — genuine LO synthesis differences, or
   measurement floor? At 1.72 ppb it is near the limit of a 1 s capture.
+- What is a "Usable UI"? (S2-5 — the term exists, the definition does not.)
 
 ---
 
-## NEEDS AN OWNER DECISION — goals I cannot source
+## Decisions taken — the sprint-1 open questions are all answered
 
-Listed because building on an unsourced goal is how the last three sessions produced work nobody
-asked for. Each of these appears in project docs as an objective or acceptance criterion, and I
-cannot trace it to the owner, to a manufacturer specification, or to an upstream statement. Several
-predate this session and may be prior-session invention — the same failure mode as the
-"cross-process arming barrier", which I used twice as though it named something defined.
+Owner, 2026-07-28. Full text in `BUILD_JOURNAL.md` D8–D10.
 
-| # | The statement | Why I am stuck |
-|---|---|---|
-| Q1 | **"Fully operational means processing capacity approximately linear-proportional to hardware capacity"** — the tier-1 definition of done | Not measurable as written. Proportional to *what* — core count, ingest ceiling, memory bandwidth? Ingest now sits at the hardware maximum with ~29 % of the machine idle. Does that satisfy it, fail it, or is it about DSP scaling instead? |
-| Q2 | **"The soak test is the yardstick for done"** | There is no soak test, and no definition of one, anywhere in the repo. I invented "1 h, zero overflows, RSS flat" for S2-3 out of nothing. Duration and pass criteria are yours to set |
-| Q3 | **"5-clean-run stability gate"**, recorded as "currently unmeetable" | Whose gate? Still binding? It is currently blocked by `qa_BasicFileIo` nondeterminism, which may itself no longer be true after the condvar fix |
-| Q4 | **Tier 2 = "UI dev; blocks; UI/reconfiguration paths"** | Is a UI actually wanted? `gnuradio4-studio` is GPL-3.0 (against an MIT core) and requires `gr4cp_server`. That is a large, licence-entangled scope to carry on an assumption |
-| Q5 | **S2-4's patch-series restructure** (`DRIFT.md` into portability classes, `replay-onto.sh`) | **This was my proposal**, from the planning phase — not yours. It is the durable move if we ever change base, and pure overhead if we never do |
-| Q6 | **"Upstream contribution is tier 3 or lower"** | Is contribution intended *at all*? The rules also say no PRs to upstream, and the tree is LGPL-derived while `LICENSE` says MIT (I-8). Tier 3 implies "later"; "never" is also a coherent answer and changes what we bother making portable |
-| Q7 | **`qa_SoapySource` gain test**, the one failure at 101/102 | Cause is known (out-of-range gain value). Is a known-cause failure acceptable, or does 102/102 matter? |
-
-**Not blocking sprint 2.** S2-1, S2-2, S2-3 and S2-5 can proceed regardless; only S2-4 depends on an
-answer (Q5, Q6). Q1 and Q2 matter for knowing when the project is *finished*, not for what to do next.
+| was | resolution |
+|---|---|
+| Q1 linear-proportionality | **Withdrawn by its own author.** Replaced by the no-unanticipated-overflow criterion above (D8) |
+| Q2 the soak test | **Retired as redundant** — it meant an extended run at capacity, which is done, and is subsumed by D8 |
+| Q3 5-clean-run stability gate | **Met and closed.** A prior agent's goal, set without knowing only one channel was ever lit |
+| Q4 is a UI wanted | **Yes, and "Usable UI" is now tier 1** (D10). The term is coined but undefined — defining it is S2-5 |
+| Q5 patch-series restructure | **Demoted** (D9). Get things done first; keep LGPL separably revertible |
+| Q6 upstream contribution | **Intended** — but no consideration in support of a PR may constrain "Works on My Mac" (D9) |
+| Q7 gain test | **Not a defect.** Withdrawn; folded into S2-4 as documentation |
