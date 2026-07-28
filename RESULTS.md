@@ -1473,3 +1473,43 @@ is zeroed on a common PPS edge; comparing `device_time_ns` across radios at the 
 then proves epoch alignment directly, immune to host scheduling. That is the instrument §9.7 said
 was needed. Still to build: a tag-capturing sink so the comparison runs off the published tags
 rather than off the block member.
+
+### 9.9 ★ EPOCH ALIGNMENT CONFIRMED — two locked radios share a PPS edge
+
+First use of the device-timestamp instrument from §9.8, and the first inter-radio timing result this
+project has been able to make at all.
+
+`31FE7A2` and `32FCD05`, both locked to the Octoclock (`ref_locked=true`), `time_source=external`,
+`set_time_unknown_pps()`, launched **3 s apart** in separate processes:
+
+| | |
+|---|---|
+| samples compared | 31 |
+| mean offset | **-3.4 ms** |
+| min / max | -10.1 ms / +6.4 ms |
+| spread | 16.5 ms |
+
+**Verdict: same PPS edge — a shared epoch.** Different edges would place the offset at ~1.000 s or
+an integer multiple of it. The measured offset is **three orders of magnitude smaller**.
+
+**Why this instrument is sound where §9.7's was not.** The retracted drift test tried to resolve an
+effect ~900 samples against ~300 000 samples of host sampling skew — noise 300x the signal. Here the
+two hypotheses are separated by 1000x (10 ms versus 1000 ms), so the same read skew cannot reach
+across the gap. The residual +/-10 ms **is** that read skew: two processes sampled from different log
+lines, with device time chunk-quantised at 533 us. It is the instrument's resolution, not a clock
+offset. **The lesson is to choose measurements whose hypotheses differ by more than the noise, not
+to sample more carefully.**
+
+The owner predicted this ("I think that's the default behaviour, to launch in sync") and was right:
+`set_time_unknown_pps()` waits for a PPS *transition* before arming the following edge, so radios
+configured at different moments still latch the same one.
+
+**Caveat, stated because one run is one run:** this holds for a 3 s stagger with B210 bring-up
+(~2.5 s) in the path. It is not proof that arbitrary launch timing always lands on one edge — a
+cross-process arming barrier would guarantee what was here observed. Worth having before anything
+depends on alignment.
+
+**Still open:** `32FCCF7` remains unlocked; the owner found it was not connected to the clock. Its
+reconnection is not yet reflected in a run. Antennas are currently disconnected, which defers the
+content/sine-wave check but affects nothing measured here — sample counting and device timestamps do
+not depend on what is on the connector.
