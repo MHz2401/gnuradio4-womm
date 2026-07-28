@@ -169,7 +169,24 @@ these are neither hypothetical nor single-trial. Full detail in `RESULTS.md` Pha
 | C-5 | **`UNKNOWN_PPS`, not `PPS`, is the multi-device sync primitive.** | `vendor/SoapyUHD/SoapyUHDDevice.cpp:873-874` — `"PPS"` → `set_time_next_pps()`, `"UNKNOWN_PPS"` → `set_time_unknown_pps()`. Only the latter waits for a PPS *transition* first, so every radio latches the same edge. |
 | C-6 | **The antenna is `TX/RX`, never `RX/TX`.** | Device: `Antennas: TX/RX, RX2`. Our own RX-only allow-list had it reversed and would have rejected the correct name; unnoticed because every prior run used RX2. Corrected in both harnesses; verified receiving. |
 | C-7 | **There is no "demand lock on start" flag.** Poll `ref_locked`. | SoapyUHD forwards `set_clock_source` to UHD with no lock logic; Ettus document loop-until-locked precisely because nothing can be set. Sampling the sensor once reads `false` on a good reference. |
+| C-9 | **Content verified — the transmitted comb is on all 8 channels.** | 13 pickets each, spacing 40001.3-40001.4 Hz against 40000 transmitted, fit rms 3.2-3.5 Hz (~0.008 % of spacing). Closes the disclaimer §9.10 carried. Detector validated in BOTH directions first: synthetic comb recovered to 0.1 Hz, pure noise rejected. `RESULTS.md` §9.11. |
+| C-10 | **★ Four locked radios agree to 1.72 ppb.** | Measured LO offsets +12914.2 to +12918.3 Hz — spread **4.1 Hz out of 2.401 GHz**. I predicted they would DIFFER; that carried a free-running assumption into a locked configuration. With a shared 10 MHz, LO error is common-mode, so this is the *transmitter's* offset seen identically by four receivers. Free-running TCXOs (+/-2 ppm) would have scattered by kHz. **This is the number that says the four radios can be treated as one instrument.** |
+| C-11 | **Four radios, 8 channels, 122.88 MS/s, ratio 1.0000, one PPS epoch.** | Worst epoch offset 39.8 ms against a one-second discriminator; ~29 % of the machine idle. Exceeds the MCM's 120 MS/s with two properties it never established. `RESULTS.md` §9.10. |
 | C-8 | **SoapyUHD/UHD are already correctly paired.** | `MANIFEST.md:99` — vendored SoapyUHD is master `2a5d381f`, 20 commits past the 0.4.1 tag, chosen because master adds UHD 4.8+ support. Our two patches total 31 lines of build hygiene, no API shims. Brew's UHD stays: the owner accepts brew where the formula has a solid build chain with many eyes on it. **Closed as a decision, not debt.** |
+
+**Instruments that had to be fixed before they could be believed — all the same family.** Each
+returned a plausible answer regardless of input, and each was caught by a control rather than by
+inspection. Build the control first.
+
+| instrument | failure | caught by |
+|---|---|---|
+| cross-process count drift (§9.7) | "wanders, no offset" for locked *and* free-running alike; ~300 000-sample skew against a ~900-sample effect | running it on a known-locked pair |
+| comb detector, v1 (§9.11) | reported 40530 Hz spacing on **silence** — peak-thinning forces ~40 kHz spacing, so the fit manufactured it | running it on a silent capture |
+| comb detector, v2 (§9.11) | rejected 3 of 4 radios by assuming every peak belongs to the comb; ISM interferers dragged the fit | offsets clustering correctly *despite* rejection |
+
+**The general rule this session earned:** choose measurements whose competing hypotheses differ by
+more than the noise, and validate in **both** directions — an instrument proven only against silence
+has been shown to say "no", not to say "yes".
 
 **Retracted this session, so nobody rebuilds them:** `RESULTS.md` §8.6 (global ingest cap) and §8's
 bottleneck claim; and **my cross-process count-difference drift test**, which reports "wanders, no

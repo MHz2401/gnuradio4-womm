@@ -77,9 +77,28 @@ def analyse(path, rate_hz, nfft, spacing_hz):
 
     f = freqs[pk]
     idx = np.round((f - f[np.argmax(spec[pk])]) / spacing_hz)  # picket index about the tallest
-    A = np.vstack([idx, np.ones_like(idx)]).T
-    (slope, intercept), *_ = np.linalg.lstsq(A, f, rcond=None)
-    resid = f - (slope * idx + intercept)
+
+    # ROBUST FIT. The plain fit assumes every detected peak belongs to the comb.
+    # At 2401 MHz - the middle of WiFi channel 1 - that is false: interferers land
+    # between pickets, take a wrong index, and drag the line. Observed directly:
+    # radios with BETTER antennas found 14-17 peaks against a 13-line comb and fitted
+    # 8 kHz worse than the radio picking up least traffic. Trim the worst outlier and
+    # refit until every retained point sits close to the line.
+    #
+    # This removes contaminating points; it does NOT relax the acceptance criterion,
+    # which still demands rms < 5% of spacing over >= 5 retained pickets.
+    keep = np.ones(f.size, dtype=bool)
+    for _ in range(f.size):
+        A = np.vstack([idx[keep], np.ones(keep.sum())]).T
+        (slope, intercept), *_ = np.linalg.lstsq(A, f[keep], rcond=None)
+        r_all = f - (slope * idx + intercept)
+        bad = keep & (np.abs(r_all) > 0.10 * spacing_hz)
+        if not bad.any() or keep.sum() <= 5:
+            break
+        keep[np.argmax(np.where(bad, np.abs(r_all), -np.inf))] = False
+
+    n_used = int(keep.sum())
+    resid = f[keep] - (slope * idx[keep] + intercept)
 
     # A COMB MUST FIT. The thinning above keeps peaks >= half a spacing apart, so
     # indexing them against the expected spacing yields a slope near it even for
@@ -88,12 +107,13 @@ def analyse(path, rate_hz, nfft, spacing_hz):
     # got binned into a plausible-looking ladder (thousands of Hz). Measured on a
     # silent capture: fit rms 11 kHz, 27% of spacing.
     fit_rms = float(np.sqrt(np.mean(resid ** 2)))
-    is_comb = (pk.size >= 5
+    is_comb = (n_used >= 5
                and fit_rms < 0.05 * spacing_hz
                and abs(slope - spacing_hz) < 0.20 * spacing_hz)
 
     out.update({
         "is_comb": is_comb,
+        "n_used": n_used,
         "spacing_hz": float(slope),
         "offset_hz": float(intercept),
         "fit_rms_hz": fit_rms,
@@ -111,6 +131,7 @@ def main():
     ap.add_argument("--spacing", type=float, default=40e3)
     ap.add_argument("--nfft", type=int, default=1 << 20)
     a = ap.parse_args()
+    args_centre = a.centre
 
     files = sorted(glob.glob(os.path.join(a.dir, "capture_*_ch*.bin")))
     if not files:
@@ -119,7 +140,7 @@ def main():
 
     print(f"centre {a.centre/1e6:.6f} MHz   rate {a.rate/1e6:.6f} MS/s   "
           f"expect {a.spacing/1e3:.0f} kHz picket spacing\n")
-    print(f"{'file':<26} {'res':>6} {'pk':>3} {'spacing':>10} {'LO offset':>11} "
+    print(f"{'file':<26} {'res':>6} {'pk':>3} {'use':>4} {'spacing':>10} {'LO offset':>11} "
           f"{'fit rms':>8} {'SNR':>7} {'pk|IQ|':>7}  verdict")
     print("-" * 104)
 
@@ -138,7 +159,7 @@ def main():
         verdict = "COMB" if r["is_comb"] else "no comb (fit too poor)"
         if r["is_comb"]:
             rows[base] = r
-        print(f"{base:<26} {r['res_hz']:>5.1f}H {r['n_pickets']:>3} {r['spacing_hz']:>9.1f} "
+        print(f"{base:<26} {r['res_hz']:>5.1f}H {r['n_pickets']:>3} {r['n_used']:>4} {r['spacing_hz']:>9.1f} "
               f"{r['offset_hz']:>+10.1f} {r['fit_rms_hz']:>7.1f} "
               f"{r['snr_db']:>6.1f}d {r['peak_iq']:>7.3f}{clip}  {verdict}")
 
@@ -162,8 +183,22 @@ def main():
     if len(means) > 1:
         v = list(means.values())
         spread = max(v) - min(v)
-        print(f"\n  across radios: spread {spread:.1f} Hz -> "
-              f"{'DIFFER (independent LOs)' if spread > 50 else 'SUSPICIOUSLY EQUAL - check for duplicated data'}")
+        # WITH A SHARED REFERENCE, AGREEMENT IS THE CORRECT OUTCOME - not a red flag.
+        # Every LO is synthesised from the same 10 MHz, so LO error is common-mode and
+        # the measured offset is the TRANSMITTER's, seen identically by every receiver.
+        # Per-radio differences of a few kHz would appear only if the radios were
+        # free-running on their own TCXOs (+/-2 ppm is +/-4.8 kHz at 2.4 GHz).
+        ppb = spread / (args_centre / 1e9) if args_centre else float("nan")
+        print(f"\n  across radios: spread {spread:.1f} Hz = {ppb:.2f} ppb of centre")
+        print("    locked to a common reference, so agreement is EXPECTED: LO error is")
+        print("    common-mode and this offset is the transmitter's, not each radio's.")
+        # Duplication would show as identical LEVELS too, not merely identical frequency.
+        snrs = [r["snr_db"] for r in rows.values()]
+        peaks = [r["peak_iq"] for r in rows.values()]
+        distinct = (max(snrs) - min(snrs) > 1.0) or (max(peaks) - min(peaks) > 1e-4)
+        print(f"    independence check: SNR {min(snrs):.1f}-{max(snrs):.1f} dB, "
+              f"peak|IQ| {min(peaks):.4f}-{max(peaks):.4f} -> "
+              f"{'genuinely distinct captures' if distinct else 'IDENTICAL LEVELS - suspect duplication'}")
 
     sp = [r["spacing_hz"] for r in rows.values()]
     print(f"  picket spacing: min {min(sp):.1f}  max {max(sp):.1f} Hz "

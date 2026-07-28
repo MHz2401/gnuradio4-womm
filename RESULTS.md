@@ -1570,3 +1570,63 @@ Nyquist limit — so the MCM was very likely running the same 15.36 and its true
 - **Not a soak.** ~45 s per run.
 - **Shared epoch is observed, not guaranteed.** `set_time_unknown_pps()` landed all four on one edge
   at this launch timing; a cross-process arming barrier would make it structural.
+
+### 9.11 ★★★ CONTENT VERIFIED — the comb is on all eight channels, and four radios agree to 1.72 ppb
+
+Closes the disclaimer §9.10 carried: that the samples were proven to *flow*, at rate and on a shared
+epoch, but never proven to *contain* anything.
+
+Owner transmitted a complex sum spaced 40 kHz about f_C = 2401 MHz, rolling off toward zero by
+f_C +/- 250 kHz — ~13 lines across 500 kHz, which 0.512 MS/s (+/-256 kHz) just covers. Four radios,
+1 s capture each, 33 MB total. **TX was the owner's action throughout; nothing here automates it.**
+
+| radio | ch0 | ch1 | within-radio |
+|---|---|---|---|
+| 31FE7A2 | +12914.2 | +12914.2 Hz | 0.0 Hz |
+| 32C7510 | +12916.2 | +12916.2 Hz | 0.0 Hz |
+| 32FCCF7 | +12917.7 | +12918.2 Hz | 0.5 Hz |
+| 32FCD05 | +12918.3 | +12918.3 Hz | 0.0 Hz |
+
+**All 8 channels COMB.** 13 pickets used on every one; spacing **40001.3-40001.4 Hz** against 40000
+transmitted; fit rms **3.2-3.5 Hz**, about 0.008 % of spacing.
+
+### The prediction that was wrong, and why that is the result
+
+I predicted offsets would **DIFFER** across radios — independent LOs, independent calibration. They
+agree to **4.1 Hz out of 2.401 GHz = 1.72 ppb.**
+
+The prediction carried a free-running assumption into a locked configuration. Every LO is
+synthesised from the same 10 MHz, so **LO error is common-mode**: +12916 Hz is the *transmitter's*
+offset from 2401 MHz, seen identically by four receivers because they share a clock. Free-running,
+each B210's own TCXO (+/-2 ppm = +/-4.8 kHz at 2.4 GHz) would have scattered these by kilohertz.
+
+**So the agreement IS the calibration result, and a better one than the one predicted: four
+independent radios, four USB paths, four processes, agreeing to 1.72 ppb.** That is the figure that
+matters for treating them as one instrument.
+
+`scripts/spectrum-check.py` was corrected accordingly — it had flagged this as "SUSPICIOUSLY EQUAL,
+check for duplicated data", a rule written for free-running radios that would have misled the next
+reader. Independence is now checked by **level**, not frequency: SNR spans 61.6-76.3 dB and peak
+|IQ| 0.0017-0.0071, so these are genuinely distinct captures. Raw peak counts differ too (13 to 17)
+— ISM traffic varying by antenna.
+
+The owner's antenna prediction held exactly: **`32C7510`, the odd antenna, has the LOWEST SNR and
+the CLEANEST comb** — 13 detected, 13 used, no interferers to trim. The better antennas pulled in
+more 2401 MHz traffic and needed 2-4 outliers rejected.
+
+### Two detector defects found before trusting it, both of the same family
+
+1. **False positive on silence.** The first comb detector reported spacing 40530 and 39089 Hz on a
+   capture with nothing transmitting. Its peak-thinning keeps detections at least half a spacing
+   apart, so fitting them against 40 kHz indices yields a ~40 kHz slope from pure noise — **the
+   detector manufactured the answer it was hunting for**, exactly like §9.7's retracted drift test.
+   The discriminator was already in the output, unused: fit rms 11 kHz, 27 % of spacing. Fit quality
+   became a hard criterion rather than a printed column.
+2. **Assuming every peak belongs to the comb.** First pass on real data rejected 3 of 4 radios —
+   14-17 peaks against a 13-line comb, offsets still clustered at +12.6 to +15.3 kHz. Not absence of
+   signal: interferers taking wrong indices and dragging the line. Fixed with iterative outlier
+   trimming. **The acceptance criterion was not relaxed** — still rms < 5 % of spacing over >= 5
+   retained pickets — and every channel now fits to 3.2-3.5 Hz.
+
+Validated in **both** directions before use, which §9.7's instrument never was: synthetic comb at
+known +1234.0 / -3210.0 Hz recovered as +1233.9 / -3210.0 (0.1 Hz error); pure noise rejected.
