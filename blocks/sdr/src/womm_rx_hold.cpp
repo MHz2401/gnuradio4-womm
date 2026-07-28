@@ -63,8 +63,16 @@ using TRadio = std::complex<float>;
 inline constexpr std::size_t kChannels     = 2UZ;
 inline constexpr double      kCentreFreqHz = 2401e6; // ISM/amateur; RX-only here, nothing is emitted
 inline constexpr double      kRxGainDb     = 20.0;   // well inside range for either B2xx RX antenna
-inline constexpr double      kDefaultRate  = 20e6;   // the owner's prior working per-channel rate
 inline constexpr double      kReadyTimeout = 60.0;   // B210 bring-up is ~2.5 s; three radios serialise
+
+// UHD refuses master_clock_rate above 30.72 MHz once two RX channels are active,
+// and the per-channel rate is MCR/decimation - so 15.36 MS/s per channel is the
+// most a B2xx delivers on two channels, i.e. 30.72 MS/s aggregate per radio.
+// Defaulted rather than left to the caller because getting it wrong fails three
+// different ways: a bare activate() error, a silent halving, or an outright
+// rejection. WOMM_MCR overrides.
+inline constexpr double kTwoChannelMcrHz = 30.72e6;
+inline constexpr double kDefaultRate     = kTwoChannelMcrHz / 2.0;
 
 inline constexpr std::array<std::string_view, 2> kRxOnlyAntennae{"RX2", "RX/TX"};
 
@@ -108,12 +116,12 @@ gr::property_map radioConfig(const std::string& serial, double rateHz, const std
         {"emit_meta_info", false},
     };
 
-    // Escalation ladder for a dark second channel, opt-in so the default path is
-    // the unmodified one. Try in this order: nothing, then an explicit master
-    // clock rate, then an explicit frontend mapping.
+    cfg["master_clock_rate"] = kTwoChannelMcrHz;
     if (const char* env = std::getenv("WOMM_MCR"); env) {
         cfg["master_clock_rate"] = std::atof(env);
     }
+    // Escalation ladder for a dark second channel, opt-in so the default path stays
+    // the one that is known to work.
     if (const char* env = std::getenv("WOMM_FEMAP"); env) {
         cfg["frontend_mapping"] = std::string(env);
     }
@@ -174,7 +182,9 @@ int main(int argc, char* argv[]) {
     }
 
     std::println("womm hold-open RX — radio {}", serial);
-    std::println("RECEIVE ONLY. {} channels x {:.2f} MS/s, centre {:.1f} MHz, gain {:.0f} dB, antenna {}", kChannels, rateHz / 1e6, kCentreFreqHz / 1e6, kRxGainDb, antenna);
+    const double mcrHz = std::getenv("WOMM_MCR") ? std::atof(std::getenv("WOMM_MCR")) : kTwoChannelMcrHz;
+    std::println("RECEIVE ONLY. {} channels x {:.2f} MS/s = {:.2f} MS/s aggregate, master clock {:.2f} MHz", kChannels, rateHz / 1e6, rateHz * static_cast<double>(kChannels) / 1e6, mcrHz / 1e6);
+    std::println("centre {:.1f} MHz, gain {:.0f} dB, antenna {}", kCentreFreqHz / 1e6, kRxGainDb, antenna);
     std::println("depth 0 — source straight to counting sinks, no DSP");
     std::println("");
     std::println("  >>> WATCH THE FRONT PANEL. Both RX channels should light. <<<");
