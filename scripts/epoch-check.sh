@@ -21,7 +21,10 @@ prefix="${2:-ep_}"
 # No mapfile: macOS ships bash 3.2, where it does not exist.
 logs=()
 for f in "$dir"/"$prefix"*.txt; do
-    [ -e "$f" ] && logs+=("$f")
+    # Match on the harness banner, not just the glob: a run that also drops
+    # CPU samples or other notes beside its logs would otherwise be reported
+    # as a radio that produced no timestamps.
+    [ -e "$f" ] && grep -q 'womm hold-open RX' "$f" && logs+=("$f")
 done
 [ "${#logs[@]}" -gt 0 ] || { echo "no ${prefix}*.txt in $dir"; exit 1; }
 

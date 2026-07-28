@@ -1513,3 +1513,60 @@ depends on alignment.
 reconnection is not yet reflected in a run. Antennas are currently disconnected, which defers the
 content/sine-wave check but affects nothing measured here — sample counting and device timestamps do
 not depend on what is on the connector.
+
+### 9.10 ★★★ FOUR RADIOS, EIGHT CHANNELS, 122.88 MS/s, ONE EPOCH
+
+The strongest result this project has produced. A fourth B210 (`32C7510`, previously not
+enumerating) was brought online and `32FCCF7`'s missing clock connection restored — the owner found
+it genuinely disconnected, so §9.7's `ref_locked=false` was a true reading of a real fault.
+
+Four radios, four **separate processes**, `WOMM_THREADS=6` each, `clock_source`/`time_source` =
+`external`, `set_time_unknown_pps()`, launched 3 s apart:
+
+| radio | ch0 | ch1 |
+|---|---|---|
+| 31FE7A2 | 15.3605 | 15.3605 MS/s |
+| 32C7510 | 15.3615 | 15.3615 MS/s |
+| 32FCCF7 | 15.3595 | 15.3595 MS/s |
+| 32FCD05 | 15.3605 | 15.3605 MS/s |
+
+**Aggregate 122.88 MS/s across 8 channels — ratio 1.0000 to the hardware maximum.**
+All four `ref_locked=true`. CPU ~53 % user, ~18 % sys, **~29 % idle**.
+
+**Epoch, by `scripts/epoch-check.sh`:**
+
+| radio | n | mean offset | verdict |
+|---|---|---|---|
+| 32C7510 | 37 | +28.9 ms | SAME EDGE |
+| 32FCCF7 | 46 | +3.1 ms | SAME EDGE |
+| 32FCD05 | 46 | +39.8 ms | SAME EDGE |
+
+**Worst offset 39.8 ms — 25x below the discriminator, and ~1/25th of the one full second that a
+different PPS edge would produce. All four share an epoch.** The offsets are larger than §9.9's
+two-radio run (3.4 ms) because more processes means more log-sampling skew; the quantity being
+bounded is unchanged.
+
+### Against the MCM, which is the comparison that matters
+
+| | MCM (GR 3.x, ~2 yr ago) | this |
+|---|---|---|
+| aggregate | 120 MS/s complex | **122.88 MS/s** |
+| radios x channels | 3 x 2 | **4 x 2** |
+| per-channel liveness | not verified | **verified, LEDs + counters** |
+| common epoch | not demonstrated | **demonstrated, 39.8 ms worst** |
+| machine headroom | unrecorded | **~29 % idle** |
+
+**gr4 on this machine now exceeds the prior working system, on the same hardware, with two
+properties the MCM never established.** Note the owner has since corrected the MCM's own figure: its
+"20 MS/s per channel" came from a misconfigured value in a repo, and 15.36 is the dual-channel
+Nyquist limit — so the MCM was very likely running the same 15.36 and its true aggregate was lower.
+
+### What this does not claim
+
+- **Content is unverified.** Antennas were disconnected for this run. Counting and device
+  timestamps are indifferent to what is on the connector, so nothing above is affected — but no
+  claim is made that the samples contain signal. That is the sine-wave capture, still to do, and it
+  needs the owner to key the B200 (never automated: RX-only by construction).
+- **Not a soak.** ~45 s per run.
+- **Shared epoch is observed, not guaranteed.** `set_time_unknown_pps()` landed all four on one edge
+  at this launch timing; a cross-process arming barrier would make it structural.
