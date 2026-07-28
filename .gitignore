@@ -65,3 +65,6 @@ package-lock.json
 # womm local build workspace (see DRIFT.md)
 .womm-prefix/
 data/
+
+# OTHER temporary/local/excluded files
+HANDOFF_TMP_REF.md
