@@ -484,7 +484,11 @@ public:
     std::uint64_t getHardwareTime(const std::string& what = "") const { return static_cast<std::uint64_t>(SoapySDRDevice_getHardwareTime(_device.get(), what.c_str())); }
 
     std::expected<void, gr::Error> setHardwareTime(long long timeNs, const std::string& event = "") {
-        if (int error = SoapySDRDevice_setHardwareTime(_device.get(), timeNs, event.empty() ? nullptr : event.c_str()); error) {
+        // NOT nullptr for an empty event: the C shim forwards this straight into
+        // Device::setHardwareTime(long long, const std::string&), so a null pointer
+        // is constructed into a std::string and strlens it. An empty string is the
+        // documented "no event" value; getHardwareTime() above already passes it.
+        if (int error = SoapySDRDevice_setHardwareTime(_device.get(), timeNs, event.c_str()); error) {
             return std::unexpected(gr::Error(std::format("setHardwareTime({}) error({}): {}", timeNs, error, SoapySDR_errToStr(error))));
         }
         return {};

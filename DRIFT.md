@@ -346,3 +346,79 @@ than adding a platform branch.
 
 **Reverse:** `git revert` the Category G commits. Note G-3 must not be reverted while G-2 stands —
 that combination is the data-race one.
+
+---
+
+## Category H — multi-channel receive was impossible (two defects, both ours to report)
+
+`blocks/sdr/include/gnuradio-4.0/sdr/SoapySource.hpp`,
+`blocks/sdr/include/gnuradio-4.0/sdr/SoapyRaiiWrapper.hpp`. Found 2026-07-27 by the E0.0
+hold-open harness, at the owner's suggestion that a single-channel run could be masquerading as a
+two-channel one. It was worse than that: **`num_channels > 1` had never worked on real hardware at
+all**, and every throughput figure this project has recorded is single-channel.
+
+Same shape as Category G: the second defect was unreachable until the first was fixed.
+
+### H-1 — `start()` cannot express a timed start, so UHD refuses the stream
+
+`SoapySource::start()` called `_rxStream.activate()` **bare** — `flags=0, timeNs=0, numElems=0`,
+which SoapySDR maps to "stream now". UHD **rejects** that when one streamer covers several
+channels:
+
+> `RuntimeError: Invalid recv stream command - stream now on multiple channels in a single streamer will fail to time align.`
+
+Reproduced outside gr4 with `SoapySDRUtil --rate=15.36e6 --channels="0,1" --direction=RX`, so it is
+a UHD contract, not a gr4 bug — but gr4 had **no way to satisfy it**. `RESULTS.md` §8.4 had already
+recorded the missing `start_time` setting as a *synchronisation* gap; it is in fact a hard
+prerequisite for two-channel operation.
+
+Fix: new `start_time_offset` setting (seconds, 0 = start now). When `num_channels > 1` or the
+offset is set, `start()` zeroes the device clock and arms the stream 0.1 s ahead. Single-channel
+behaviour is unchanged — verified by re-running the 1-channel `womm_bmax` path (19.81 MS/s, PASS).
+
+### H-2 — `setHardwareTime()` segfaults on its own default argument
+
+Exposed by H-1, and **found on hardware, not by any test**. `SoapyRaiiWrapper.hpp:487` passed
+`event.empty() ? nullptr : event.c_str()`. The C shim forwards that straight into
+`Device::setHardwareTime(long long, const std::string&)`, so a **null pointer is constructed into a
+`std::string`** — `strlen(nullptr)`, `EXC_BAD_ACCESS at 0x0`. The sibling `getHardwareTime` at
+`:484` already passes `c_str()` unconditionally, so the wrapper contradicted itself.
+
+Fix: pass `event.c_str()`; an empty string is the documented "no event" value. The other
+`empty() ? nullptr` in the file (`:840`, `setupStream`) is a `SoapySDRKwargs*` where null **is** the
+documented convention — correct, left alone.
+
+`setHardwareTime` and `getHardwareTime` were both **entirely uncalled** before this session
+(`RESULTS.md` §8.4), which is why a crash on the default argument survived in shipped code.
+
+### Result
+
+`womm_rx_hold`, one B210, 2 channels, depth 0, MCR 30.72 MHz:
+
+| | rate | verdict |
+|---|---|---|
+| ch0 | 15.36 MS/s | LIVE |
+| ch1 | 15.36 MS/s | LIVE |
+
+Sample counts identical between channels across the whole run — the timed start aligned them.
+
+### ⚠ The B2xx two-channel ceiling, measured
+
+UHD refuses `master_clock_rate > 30.72 MHz` when two RX channels are active, and per-channel rate
+is MCR/decimation. So a B210 sustains **30.72 MS/s aggregate across both channels** — this is the
+"~32 MS/s with two front ends" figure in `HANDOFF.md`, which is therefore **an aggregate per radio
+and is correct**. Requesting 20 MS/s per channel pins MCR at 40 MHz and is rejected outright; with
+MCR pinned to 30.72 UHD silently delivers 15.36.
+
+### Reconciliation path
+
+Both are **ours** (original work, no LGPL provenance) and both are upstream-shaped: H-2 is a
+one-token null-pointer fix, H-1 adds a setting that the wrapper already had primitives for
+(`activate(flags,timeNs,numElems)` at `:750`, `setHardwareTime` at `:486`). Neither carries a
+licensing obstacle to being offered upstream.
+
+*Unnecessary when:* upstream wires a timed start into `SoapySource::start()` and stops passing
+`nullptr` to `setHardwareTime`.
+
+**Reverse:** `git revert` the Category H commit. H-2 must not be reverted while H-1 stands — that
+combination is the segfault.

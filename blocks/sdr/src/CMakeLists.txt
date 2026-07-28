@@ -59,6 +59,16 @@ target_link_libraries(
           gr-math
           gr-testing)
 
+# womm: hold-open two-channel RX - eyes-on proof that both channels stream (see RESULTS.md)
+add_executable(womm_rx_hold womm_rx_hold.cpp)
+target_link_libraries(
+  womm_rx_hold
+  PRIVATE gnuradio-options
+          gnuradio-core
+          gnuradio-blocklib-core
+          gr-sdr
+          gr-testing)
+
 # RECEIVE-ONLY GATE. The harness must be structurally incapable of transmitting, not
 # merely written so as not to. Assert on the LINKED BINARY that no SoapySink symbol
 # is present - a comment or a code review cannot make that guarantee, and a future
@@ -70,3 +80,11 @@ add_custom_command(
     ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_bmax> -P
     ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
   COMMENT "womm: verifying womm_bmax links no transmit path")
+
+add_custom_command(
+  TARGET womm_rx_hold
+  POST_BUILD
+  COMMAND
+    ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_rx_hold> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
+  COMMENT "womm: verifying womm_rx_hold links no transmit path")

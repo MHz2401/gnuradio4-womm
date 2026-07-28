@@ -59,6 +59,7 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     Annotated<std::vector<double>, "iq_balance", Doc<"manual IQ balance correction [I0,Q0,I1,Q1,...] per channel">>              iq_balance;
     Annotated<std::string, "time_source", Doc<"PPS/GPS time reference (e.g. external, gpsdo)">>                                  time_source;
     Annotated<double, "reference_clock_rate", Unit<"Hz">, Doc<"reference oscillator rate (0 = auto)">>                           reference_clock_rate = 0.0;
+    Annotated<float, "start_time_offset", Unit<"s">, Doc<"arm streaming this far ahead of the device clock (0 = start now)">>    start_time_offset    = 0.f;
     Annotated<std::string, "stream_args", Doc<"SoapySDR stream kwargs (comma-separated key=value)">>                             stream_args;
     Annotated<std::string, "tune_args", Doc<"per-channel tuning kwargs (comma-separated key=value)">>                            tune_args;
     Annotated<std::string, "frontend_mapping", Doc<"logical-to-physical channel mapping">>                                       frontend_mapping;
@@ -78,7 +79,7 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     Annotated<float, "ppm_estimator_cutoff", Unit<"Hz">, Doc<"LP cutoff for sample-rate estimator (0 = disable)">>   ppm_estimator_cutoff = 0.f;
     Annotated<float, "ppm_tag_threshold", Doc<"emit corrected frequency/rate when ppm drift exceeds this">>          ppm_tag_threshold    = 0.1f;
 
-    GR_MAKE_REFLECTABLE(SoapySource, clk_in, out, device, device_parameter, master_clock_rate, clock_source, sample_rate, num_channels, rx_antennae, frequency, rx_bandwidths, rx_gains, gain_mode, frequency_correction, dc_offset_mode, dc_offset, iq_balance, time_source, reference_clock_rate, stream_args, tune_args, frontend_mapping, device_settings, max_chunk_size, max_time_out_us, max_overflow_count, max_fragment_count, verbose_overflow, trigger_name, emit_timing_tags, emit_meta_info, tag_interval, dc_blocker_enabled, dc_blocker_cutoff, ppm_estimator_cutoff, ppm_tag_threshold);
+    GR_MAKE_REFLECTABLE(SoapySource, clk_in, out, device, device_parameter, master_clock_rate, clock_source, sample_rate, num_channels, rx_antennae, frequency, rx_bandwidths, rx_gains, gain_mode, frequency_correction, dc_offset_mode, dc_offset, iq_balance, time_source, reference_clock_rate, start_time_offset, stream_args, tune_args, frontend_mapping, device_settings, max_chunk_size, max_time_out_us, max_overflow_count, max_fragment_count, verbose_overflow, trigger_name, emit_timing_tags, emit_meta_info, tag_interval, dc_blocker_enabled, dc_blocker_cutoff, ppm_estimator_cutoff, ppm_tag_threshold);
 
     soapy::Device                          _device{};
     soapy::Device::Stream<T, SOAPY_SDR_RX> _rxStream{};
@@ -179,8 +180,26 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
             return;
         }
         soapy::detail::DeviceRegistry::registerActivation(_devKwargs, [this] {
-            if (auto r = _rxStream.activate(); !r) {
-                this->emitErrorMessage("start()", r.error());
+            // UHD REFUSES a "stream now" start when one streamer covers several
+            // channels — "stream now on multiple channels in a single streamer will
+            // fail to time align" — so a timed start is not a synchronisation luxury
+            // here, it is the only way multi-channel receive works at all. Zero the
+            // device clock and arm the stream slightly ahead of it.
+            constexpr float               kDefaultStartOffsetSec = 0.1f; // ample for the command to reach the device
+            std::expected<void, gr::Error> activated;
+            if (num_channels > 1U || start_time_offset > 0.f) {
+                const float offsetSec = start_time_offset > 0.f ? start_time_offset.value : kDefaultStartOffsetSec;
+                if (auto r = _device.setHardwareTime(0); !r) {
+                    this->emitErrorMessage("start()", r.error());
+                    this->requestStop();
+                    return;
+                }
+                activated = _rxStream.activate(SOAPY_SDR_HAS_TIME, static_cast<long long>(offsetSec * 1e9f), 0UZ);
+            } else {
+                activated = _rxStream.activate();
+            }
+            if (!activated) {
+                this->emitErrorMessage("start()", activated.error());
                 this->requestStop();
                 return;
             }

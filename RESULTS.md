@@ -1270,3 +1270,87 @@ will move this number.**
 `hardware_concurrency()` per *process*. Any multi-process gr4 deployment therefore oversubscribes
 the machine by the process count, with workers that spin rather than back off. Three processes cost
 12x throughput here. A multi-process design must size pools explicitly.
+
+---
+
+## Phase 9 — ★ TWO-CHANNEL RECEIVE HAS NEVER WORKED. Every prior figure is single-channel.
+
+Run 2026-07-27, at the owner's suggestion: a harness that counts *aggregate* samples cannot tell
+"two channels running" from "one running and one silently dead" — both read as half rate, which is
+indistinguishable from a performance problem. He proposed a hold-open console run so the front
+panel LEDs could be read directly, the LED being out-of-band evidence no defect in our code can
+fake. That was the best-value suggestion in the project so far.
+
+Harness: `blocks/sdr/src/womm_rx_hold.cpp` — one radio, `num_channels = 2`, depth 0, per-channel
+counters printed live, streams until Enter. RX-only by construction (`assert_no_tx.cmake` gate on
+the linked binary).
+
+### 9.1 The gap was total, not partial
+
+`womm_bmax.cpp:116` and `womm_b210_sweep.cpp:86` both set `num_channels = 1`. So:
+
+| | channels | per channel | aggregate |
+|---|---|---|---|
+| every figure recorded before today | **1 per radio** | ~14.6 MS/s (3-radio case) | ~44 MS/s |
+| the owner's prior working system (MCM) | **2 per radio** | 20 MS/s | 120 MS/s |
+
+**The headline MCM comparison was never like-for-like.** `SoapySource` *supports* two channels —
+per-channel loops at `:569-704`, `channelIndices` at `:533`, a separate `readStreamIntoBufferList`
+path at `:305` — but that path had never been executed on hardware.
+
+### 9.2 Two defects, the second unreachable until the first was fixed
+
+See `DRIFT.md` Category H for the full write-up.
+
+- **H-1** `SoapySource::start()` called `activate()` bare, i.e. "stream now". UHD **refuses** that
+  on a multi-channel streamer: *"Invalid recv stream command - stream now on multiple channels in a
+  single streamer will fail to time align."* Reproduced **outside gr4** with
+  `SoapySDRUtil --rate=15.36e6 --channels="0,1" --direction=RX`, so it is a UHD contract — but gr4
+  had no way to satisfy it. §8.4 had filed the missing timed start under *synchronisation*; it is
+  actually a prerequisite for two-channel receive existing at all.
+- **H-2** `SoapyRaiiWrapper.hpp:487` passed `nullptr` to `setHardwareTime` for an empty event. The
+  C shim constructs that into a `std::string` → `strlen(nullptr)` → **SIGSEGV**. Found on hardware
+  via the crash report, not by any test. Both `setHardwareTime` and `getHardwareTime` were entirely
+  uncalled before today (§8.4), which is how a crash on a default argument survived.
+
+### 9.3 Result — both channels live
+
+One B210 (31FE7A2), 2 channels, depth 0, MCR 30.72 MHz, centre 2401 MHz, gain 20 dB, RX2:
+
+| | achieved | verdict |
+|---|---|---|
+| ch0 | 15.36 MS/s | LIVE |
+| ch1 | 15.36 MS/s | LIVE |
+
+Sample counts **identical** between channels for the whole run — the timed start aligned them.
+Single-channel regression check re-run afterwards: `womm_bmax` 1 radio at 20 MS/s → 19.81 MS/s,
+PASS. The bare-activate path is unchanged when `num_channels == 1`.
+
+### 9.4 ⚠ The B2xx two-channel ceiling, and an open contradiction with the MCM
+
+UHD refuses `master_clock_rate > 30.72 MHz` with two RX channels active, and per-channel rate is
+MCR/decimation. Measured consequences:
+
+| request | outcome |
+|---|---|
+| 2 ch @ 20 MS/s, MCR auto (20 MHz) | `activate()` STREAM_ERROR |
+| 2 ch @ 20 MS/s, MCR pinned 40 MHz | rejected: *"exceeds maximum possible master clock rate (30.72 MHz) when using 2 RX channels"* |
+| 2 ch @ 20 MS/s, MCR pinned 30.72 MHz | silently delivered **15.36** MS/s |
+| 2 ch @ 15.36 MS/s, MCR 30.72 MHz | **PASS, both live** |
+
+So a B210 sustains **30.72 MS/s aggregate across both channels**. That *is* the "~32 MS/s with two
+front ends" figure in `HANDOFF.md` — it is an aggregate per radio, and it is correct.
+
+**This contradicts the MCM.** 3 radios x 2 channels x 20 MS/s requires **40 MS/s aggregate per
+radio**, above what UHD 4.10 permits here. Three B210s cap at **92.16 MS/s**, not 120. Unresolved,
+and put to the owner rather than guessed at: the candidates are that the MCM's "20 MHz" was
+bandwidth rather than sample rate, that it ran 10 MS/s per channel, or that an older UHD imposed a
+different limit.
+
+**This narrows the gr4 gap rather than widening it** — the target to beat is 92.16 MS/s across
+three radios, not 120.
+
+### 9.5 What this does NOT yet establish
+
+Not run: three radios, three processes (the MCM topology), core utilisation during a two-channel
+run, or the depth sweep. E0.1/E0.2 are unchanged and still outstanding.
