@@ -84,6 +84,13 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     // What the DEVICE reports back, as opposed to what was asked of it. Written once
     // during reinitDevice() before the IO thread starts, so a reader after start() is
     // safe. A requested rate is a request; only these are measurements.
+    // The DEVICE's own timestamp for the most recent chunk, valid only when the read
+    // reported SOAPY_SDR_HAS_TIME. This is the radio's clock, not the host's, and it
+    // is the only thing that can establish inter-radio epoch alignment — host
+    // timestamps carry scheduling jitter far larger than the effect being measured.
+    std::atomic<std::int64_t> _lastDeviceTimeNs{0};
+    std::atomic<bool>         _deviceTimeValid{false};
+
     std::vector<double> _reportedSampleRates{};
     std::string         _reportedRefLocked{};
     std::string         _reportedClockSource{};
@@ -291,6 +298,14 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                 }
 
                 handleStreamFlags(flags);
+                // Capture the DEVICE timestamp before it is lost. SoapySDR fills time_ns
+                // on every read and gr4 has been discarding it, stamping samples with the
+                // host clock instead - which cannot express inter-radio alignment.
+                const bool hasDeviceTime = (flags & SOAPY_SDR_HAS_TIME) != 0;
+                if (hasDeviceTime) {
+                    _lastDeviceTimeNs.store(static_cast<std::int64_t>(time_ns), std::memory_order_relaxed);
+                }
+                _deviceTimeValid.store(hasDeviceTime, std::memory_order_relaxed);
                 auto nSamples = static_cast<std::size_t>(ret);
                 auto tWallNs  = detail::wallClockNs();
 
@@ -361,6 +376,14 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                 }
 
                 handleStreamFlags(flags);
+                // Capture the DEVICE timestamp before it is lost. SoapySDR fills time_ns
+                // on every read and gr4 has been discarding it, stamping samples with the
+                // host clock instead - which cannot express inter-radio alignment.
+                const bool hasDeviceTime = (flags & SOAPY_SDR_HAS_TIME) != 0;
+                if (hasDeviceTime) {
+                    _lastDeviceTimeNs.store(static_cast<std::int64_t>(time_ns), std::memory_order_relaxed);
+                }
+                _deviceTimeValid.store(hasDeviceTime, std::memory_order_relaxed);
                 auto nSamples = static_cast<std::size_t>(ret);
                 auto tWallNs  = detail::wallClockNs();
 
@@ -484,6 +507,15 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
 
                 std::string clockSource = (_clockOffsetValid && !_clockTriggerName.empty()) ? _clockTriggerName : std::string("wallclock");
                 tag::put(metaInfo, "clock_source", std::move(clockSource));
+
+                // The device's own timestamp, carried alongside rather than replacing
+                // TRIGGER_TIME: TRIGGER_TIME is UTC wall time by contract, whereas a
+                // PPS-zeroed device clock counts from an arbitrary epoch. Consumers
+                // comparing radios want this one; consumers wanting UTC want the other.
+                if (_deviceTimeValid.load(std::memory_order_relaxed)) {
+                    tag::put(metaInfo, "device_time_ns", _lastDeviceTimeNs.load(std::memory_order_relaxed));
+                    tag::put(metaInfo, "device_time_source", _reportedTimeSource.empty() ? std::string("internal") : _reportedTimeSource);
+                }
 
                 if (_clockOffsetValid) {
                     tag::put(metaInfo, "clock_offset_ns", _clockOffsetNs);

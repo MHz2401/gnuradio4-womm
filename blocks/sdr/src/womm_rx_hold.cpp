@@ -269,6 +269,15 @@ int main(int argc, char* argv[]) {
             const double mss   = static_cast<double>(delta) / elapsed / 1e6;
             std::println("  ch{}  {:>14} samples  {:>7.2f} MS/s  {}", ch, cur[ch], mss, delta == 0U ? "*** NO DATA ***" : "");
         }
+        // The DEVICE's clock, not the host's. This is the only quantity that can
+        // establish inter-radio epoch alignment; host timestamps carry scheduling
+        // jitter orders of magnitude larger than the effect.
+        if (src._deviceTimeValid.load(std::memory_order_relaxed)) {
+            const std::int64_t dev = src._lastDeviceTimeNs.load(std::memory_order_relaxed);
+            std::println("       device_time {}.{:09d} s", dev / 1'000'000'000, dev % 1'000'000'000);
+        } else {
+            std::println("       device_time UNAVAILABLE (no SOAPY_SDR_HAS_TIME on reads)");
+        }
         std::println("");
         prev  = cur;
         prevT = now;

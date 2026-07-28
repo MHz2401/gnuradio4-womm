@@ -1427,3 +1427,49 @@ counters — host-side counters never can be, whatever the sampling discipline.
 **Still not established:** that the radios start on the same PPS edge. Three processes launched 3 s
 apart each call `set_time_unknown_pps()` against a different edge, so they share a rate but not
 necessarily an epoch. Needs either a cross-process arming barrier or a common absolute epoch.
+
+### 9.8 ★ THE DEVICE TIMESTAMP WAS BEING DISCARDED — now captured, and it works
+
+Chasing the owner's instruction to use the tags rather than host-derived rates, and following §9.7's
+retraction of the host-side drift instrument.
+
+**The defect.** `SoapySDR` fills a hardware timestamp into `time_ns` on **every** read. In
+`SoapySource::ioReadLoop` that variable is declared, passed by reference into `readStream`
+(`:278`) and `readStreamIntoBufferList` (`:348`), and **never read again** — four occurrences, all
+at the call sites. `handleStreamFlags(flags)` is called but the only `SOAPY_SDR_HAS_TIME` reference
+in the entire SDR tree is inside `getSoapyFlagNames()`, **a debug string formatter**. Meanwhile
+`emitTimingTag` stamps `TRIGGER_TIME` from `detail::wallClockNs()` — the **host** clock.
+
+So the radio hands gr4 its own clock on every read and gr4 throws it away, then labels the samples
+with host time. Same shape as Category G and H: the capability is fully plumbed and simply unwired.
+
+**Why it matters.** §9.7 retracted a drift instrument because host-side sampling skew (~300 000
+samples) swamped the effect (~900 samples). *Any* host-derived timestamp has that problem — the tags
+as previously emitted could not have verified inter-radio alignment either, because they carried the
+same host clock. The device timestamp is the only quantity that can.
+
+**The fix.** Capture `time_ns` when `flags & SOAPY_SDR_HAS_TIME`, hold it in an atomic, and publish
+it in the timing tag's meta info as `device_time_ns` (plus `device_time_source`). Carried
+**alongside** `TRIGGER_TIME`, not replacing it: `TRIGGER_TIME` is UTC wall time by contract, whereas
+a PPS-zeroed device clock counts from an arbitrary epoch. Consumers comparing radios want the new
+key; consumers wanting UTC keep the old one.
+
+**Verified on hardware** — B210 `31FE7A2`, free-running, one radio, `HAS_TIME` present on reads:
+
+```
+device_time 1.145869172 s
+device_time 2.151202505 s   (+1.005333333)
+device_time 3.156002504 s   (+1.004799999)
+device_time 4.157602503 s   (+1.001599999)
+device_time 5.162402502 s   (+1.004799999)
+```
+
+Increments are chunk-quantised (8192 samples / 15.36 MS/s = 533.33 us) and exceed the nominal 1 s
+poll because the host interval genuinely is slightly over a second. **The device clock is the
+accurate one** — which is the whole point.
+
+**What this unlocks.** With `time_source=external` and `set_time_unknown_pps()`, every radio's clock
+is zeroed on a common PPS edge; comparing `device_time_ns` across radios at the same sample index
+then proves epoch alignment directly, immune to host scheduling. That is the instrument §9.7 said
+was needed. Still to build: a tag-capturing sink so the comparison runs off the published tags
+rather than off the block member.
