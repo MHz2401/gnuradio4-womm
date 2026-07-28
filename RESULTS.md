@@ -1387,3 +1387,43 @@ sweep at fixed channel count and topology) and it is still outstanding.
 
 **Standing correction:** `HANDOFF.md` §1b ("★ THE TIER-1 BOTTLENECK IS NOW SDR INGEST, NOT DSP")
 is refuted by this measurement and needs to be retracted there.
+
+### 9.7 External reference — one radio does not lock, and one instrument does not work
+
+Owner directed setting the radios to the external Octoclock reference and PPS, and to `TX/RX`
+antennas where the antennas are physically connected.
+
+**Corrections to my own work, both caught within minutes of each other:**
+
+- I added a `ref_locked` check that **sampled the sensor once**, immediately after
+  `setClockSource()`. The reference PLL needs time to acquire, so it read `false` on a perfectly
+  good reference and I told the owner to go check his cabling. Wrong. Ettus document a
+  loop-until-locked pattern precisely because **no device argument demands lock on start**; there
+  is nothing to set. Now polls to a 3 s deadline, and two of three radios lock immediately.
+- The antenna allow-list read `"RX/TX"`. The device spells it **`TX/RX`** (`Antennas: TX/RX, RX2`),
+  so our own guard would have refused the correct name. `HANDOFF.md` carries the same reversal.
+
+**Real finding: `32FCCF7` does not lock.** `31FE7A2` and `32FCD05` both report `ref_locked=true`
+and stream at full rate on the external reference; `32FCCF7` still reads `false` after 3000 ms and
+refuses to run. Isolated to one unit, with the other two as controls on the same code path. That is
+a hardware/cabling item, not a software one.
+
+**⚠ Retracted instrument: cross-process count-difference drift.** I compared cumulative sample
+counts between two radios over time, reasoning that locked radios hold a constant difference and
+free-running ones drift. Run against both a locked and a free-running pair, it reports "wanders, no
+offset" for **both**, and assigns the locked pair a *worse* apparent offset (244 ppm) than the
+free-running one (26 ppm). It cannot distinguish them.
+
+The reason is sampling, not clocks: the counts come from log lines written by two independent
+processes at uncoordinated instants, and that skew is ~300 000 samples (~20 ms). A real 1 ppm
+offset over 60 s is ~900 samples — **the noise floor is 300x the effect.** No conclusion about lock
+may be drawn from it, in either direction.
+
+**What actually establishes lock is the device's own `ref_locked` sensor**, which is direct and
+which the two working radios report true. The correct instrument for *epoch* alignment is the
+device timestamp carried in the timing tags (`emit_timing_tags`, one per second), not host-side
+counters — host-side counters never can be, whatever the sampling discipline.
+
+**Still not established:** that the radios start on the same PPS edge. Three processes launched 3 s
+apart each call `set_time_unknown_pps()` against a different edge, so they share a rate but not
+necessarily an epoch. Needs either a cross-process arming barrier or a common absolute epoch.

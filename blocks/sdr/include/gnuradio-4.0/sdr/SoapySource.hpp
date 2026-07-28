@@ -592,6 +592,8 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     // statement that it has. Streaming before then yields garbage, and on a
     // synchronised multi-radio capture that garbage arrives time-aligned across
     // radios, which is indistinguishable from signal.
+    static constexpr long kRefLockTimeoutMs = 3000; // a 10 MHz reference PLL acquires well inside this
+
     void waitForLoLock() {
         constexpr auto kLoLockTimeout = std::chrono::milliseconds(1000);
         const auto     deadline       = std::chrono::steady_clock::now() + kLoLockTimeout;
@@ -619,12 +621,28 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
             // Selecting a reference that is not physically present does NOT error —
             // the device simply free-runs, and every downstream figure silently
             // becomes unsynchronised. Ask the device whether it actually locked.
+            // Selecting a reference that is not physically present does NOT error —
+            // the device free-runs, and every downstream figure silently becomes
+            // unsynchronised while looking perfect. Ask the device instead.
+            //
+            // POLL, do not sample once: the reference PLL needs time to acquire after
+            // set_clock_source(), so an immediate read reports 'false' on a perfectly
+            // good reference. Ettus document the loop-until-locked pattern precisely
+            // because there is no device argument that demands lock on start.
             if (clock_source.value != "internal") {
                 const auto sensors = _device.listSensors();
                 if (std::ranges::find(sensors, "ref_locked") != sensors.end()) {
-                    _reportedRefLocked = _device.readSensor("ref_locked");
+                    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kRefLockTimeoutMs);
+                    do {
+                        _reportedRefLocked = _device.readSensor("ref_locked");
+                        if (_reportedRefLocked.starts_with("true")) {
+                            break;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    } while (std::chrono::steady_clock::now() < deadline);
+
                     if (!_reportedRefLocked.starts_with("true")) {
-                        this->emitErrorMessage("applyClockConfig()", gr::Error(std::format("clock_source='{}' selected but ref_locked reads '{}' — the device is free-running", clock_source.value, _reportedRefLocked)));
+                        this->emitErrorMessage("applyClockConfig()", gr::Error(std::format("clock_source='{}' selected but ref_locked still reads '{}' after {} ms — the device is free-running", clock_source.value, _reportedRefLocked, kRefLockTimeoutMs)));
                     }
                 }
             }
