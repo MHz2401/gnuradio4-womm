@@ -3,6 +3,16 @@
 Formal sprint record. Sprint 1 is written **retroactively** on 2026-07-28, at the owner's request,
 covering work already done; sprint 2 is planned forward from it.
 
+**AUTHORITATIVE SOURCES FOR TIMING (owner, 2026-07-28).** All prior-session statements about
+timing are void. Only these count, in order:
+
+1. tests run in the 2026-07-27/28 session,
+2. manufacturer specifications,
+3. current statements in docs, comments or sites maintained by the authors of the software and
+   drivers in use — gnuradio.org, fair-acc, pothosware, Ettus, Great Scott Gadgets.
+
+A figure from a prior session is not evidence, and is not a question to be resolved either.
+
 Rules this document follows, because the project has been bitten by each:
 
 - A milestone is **measured**, with the measurement named. "Works" is not a milestone.
@@ -92,8 +102,33 @@ upstream decision that sprint 1 deferred.
 
 ### Open questions carried forward
 
+Deliberately short. "Why was the old ~44 MS/s figure what it was" is **not** on this list: under the
+authoritative-sources rule it is a prior-session timing statement, so it is neither evidence nor a
+question. It was replaced, not explained, and that is sufficient.
+
 - Is the 39.8 ms epoch agreement stable across launch timings, or an artefact of this stagger? (S2-1)
 - What explains the residual 4.1 Hz between radios — genuine LO synthesis differences, or
   measurement floor? At 1.72 ppb it is near the limit of a 1 s capture.
-- `RESULTS.md` §8's ~44 MS/s figure is refuted but **not attributed**: the new configuration changed
-  channels, DSP depth and process topology at once.
+
+---
+
+## NEEDS AN OWNER DECISION — goals I cannot source
+
+Listed because building on an unsourced goal is how the last three sessions produced work nobody
+asked for. Each of these appears in project docs as an objective or acceptance criterion, and I
+cannot trace it to the owner, to a manufacturer specification, or to an upstream statement. Several
+predate this session and may be prior-session invention — the same failure mode as the
+"cross-process arming barrier", which I used twice as though it named something defined.
+
+| # | The statement | Why I am stuck |
+|---|---|---|
+| Q1 | **"Fully operational means processing capacity approximately linear-proportional to hardware capacity"** — the tier-1 definition of done | Not measurable as written. Proportional to *what* — core count, ingest ceiling, memory bandwidth? Ingest now sits at the hardware maximum with ~29 % of the machine idle. Does that satisfy it, fail it, or is it about DSP scaling instead? |
+| Q2 | **"The soak test is the yardstick for done"** | There is no soak test, and no definition of one, anywhere in the repo. I invented "1 h, zero overflows, RSS flat" for S2-3 out of nothing. Duration and pass criteria are yours to set |
+| Q3 | **"5-clean-run stability gate"**, recorded as "currently unmeetable" | Whose gate? Still binding? It is currently blocked by `qa_BasicFileIo` nondeterminism, which may itself no longer be true after the condvar fix |
+| Q4 | **Tier 2 = "UI dev; blocks; UI/reconfiguration paths"** | Is a UI actually wanted? `gnuradio4-studio` is GPL-3.0 (against an MIT core) and requires `gr4cp_server`. That is a large, licence-entangled scope to carry on an assumption |
+| Q5 | **S2-4's patch-series restructure** (`DRIFT.md` into portability classes, `replay-onto.sh`) | **This was my proposal**, from the planning phase — not yours. It is the durable move if we ever change base, and pure overhead if we never do |
+| Q6 | **"Upstream contribution is tier 3 or lower"** | Is contribution intended *at all*? The rules also say no PRs to upstream, and the tree is LGPL-derived while `LICENSE` says MIT (I-8). Tier 3 implies "later"; "never" is also a coherent answer and changes what we bother making portable |
+| Q7 | **`qa_SoapySource` gain test**, the one failure at 101/102 | Cause is known (out-of-range gain value). Is a known-cause failure acceptable, or does 102/102 matter? |
+
+**Not blocking sprint 2.** S2-1, S2-2, S2-3 and S2-5 can proceed regardless; only S2-4 depends on an
+answer (Q5, Q6). Q1 and Q2 matter for knowing when the project is *finished*, not for what to do next.
