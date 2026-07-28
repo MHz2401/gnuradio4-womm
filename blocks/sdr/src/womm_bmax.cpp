@@ -81,7 +81,7 @@ inline constexpr double      kMeasureSec    = 8.0;
 
 // A B2xx receives on RX2 or on the RX half of RX/TX. Neither emits. Anything not
 // on this list is refused rather than guessed at.
-inline constexpr std::array<std::string_view, 2> kRxOnlyAntennae{"RX2", "RX/TX"};
+inline constexpr std::array<std::string_view, 2> kRxOnlyAntennae{"RX2", "TX/RX"};
 
 void mustConnect(auto&& r, std::string_view what) {
     if (!r.has_value()) {
@@ -286,7 +286,7 @@ int main(int argc, char* argv[]) {
     const double      rateHz   = argc > 1 ? std::atof(argv[1]) : 43e6;
     const std::size_t nBallast = argc > 2 ? static_cast<std::size_t>(std::atol(argv[2])) : 0UZ;
     const std::size_t nRadios  = argc > 3 ? static_cast<std::size_t>(std::atol(argv[3])) : 0UZ; // 0 = all found
-    const std::string antenna  = argc > 4 ? argv[4] : "RX2";
+    const std::string antenna  = argc > 4 ? argv[4] : "TX/RX";
 
     if (std::ranges::find(kRxOnlyAntennae, antenna) == kRxOnlyAntennae.end()) {
         std::println(stderr, "refusing to run: '{}' is not on the receive-only antenna allow-list", antenna);

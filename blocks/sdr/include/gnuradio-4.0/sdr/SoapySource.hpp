@@ -81,6 +81,14 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
 
     GR_MAKE_REFLECTABLE(SoapySource, clk_in, out, device, device_parameter, master_clock_rate, clock_source, sample_rate, num_channels, rx_antennae, frequency, rx_bandwidths, rx_gains, gain_mode, frequency_correction, dc_offset_mode, dc_offset, iq_balance, time_source, reference_clock_rate, start_time_offset, stream_args, tune_args, frontend_mapping, device_settings, max_chunk_size, max_time_out_us, max_overflow_count, max_fragment_count, verbose_overflow, trigger_name, emit_timing_tags, emit_meta_info, tag_interval, dc_blocker_enabled, dc_blocker_cutoff, ppm_estimator_cutoff, ppm_tag_threshold);
 
+    // What the DEVICE reports back, as opposed to what was asked of it. Written once
+    // during reinitDevice() before the IO thread starts, so a reader after start() is
+    // safe. A requested rate is a request; only these are measurements.
+    std::vector<double> _reportedSampleRates{};
+    std::string         _reportedRefLocked{};
+    std::string         _reportedClockSource{};
+    std::string         _reportedTimeSource{};
+
     soapy::Device                          _device{};
     soapy::Device::Stream<T, SOAPY_SDR_RX> _rxStream{};
     soapy::Kwargs                          _devKwargs{};
@@ -189,11 +197,27 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
             std::expected<void, gr::Error> activated;
             if (num_channels > 1U || start_time_offset > 0.f) {
                 const float offsetSec = start_time_offset > 0.f ? start_time_offset.value : kDefaultStartOffsetSec;
-                if (auto r = _device.setHardwareTime(0); !r) {
-                    this->emitErrorMessage("start()", r.error());
+                // With an external time reference, zero the clock on a PPS edge rather
+                // than immediately. "UNKNOWN_PPS" — not "PPS" — is the multi-device
+                // call: SoapyUHD maps it to set_time_unknown_pps(), which first waits
+                // for a PPS TRANSITION and only then arms the following edge, so every
+                // radio latches the SAME edge. Plain "PPS" arms the next edge blind, so
+                // two radios configured either side of one can end up a second apart.
+                // The call blocks for up to ~2 s by construction.
+                const bool externalTime = !time_source->empty() && time_source.value != "none";
+                const auto zeroed       = externalTime ? _device.setHardwareTime(0, "UNKNOWN_PPS") : _device.setHardwareTime(0);
+                if (!zeroed) {
+                    this->emitErrorMessage("start()", zeroed.error());
                     this->requestStop();
                     return;
                 }
+                // An ABSOLUTE time on the device epoch, never one computed from a
+                // reading of the device clock: sampling getHardwareTime() and adding
+                // an offset is a race, and three processes each sampling it get three
+                // different start instants — which destroys exactly the alignment PPS
+                // exists to provide. After set_time_next_pps(0) every radio's clock is
+                // zeroed on the same edge, so the same literal is the same instant on
+                // all of them.
                 activated = _rxStream.activate(SOAPY_SDR_HAS_TIME, static_cast<long long>(offsetSec * 1e9f), 0UZ);
             } else {
                 activated = _rxStream.activate();
@@ -540,6 +564,7 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
         applyIqBalance();
         applyFrontendMapping();
         applyDeviceSettings();
+        waitForLoLock();
 
         auto        supportedFormats = _device.getStreamFormats(SOAPY_SDR_RX, 0);
         const char* requestedFormat  = soapy::detail::toSoapySDRFormat<T>();
@@ -561,12 +586,51 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
         _rxStream = std::move(*streamResult);
     }
 
+    // Tuning is not instantaneous. setCenterFrequency() returns as soon as the request
+    // is accepted, and applyFrequency()'s readback confirms only the requested VALUE —
+    // not that the synthesiser has settled on it. lo_locked is the device's own
+    // statement that it has. Streaming before then yields garbage, and on a
+    // synchronised multi-radio capture that garbage arrives time-aligned across
+    // radios, which is indistinguishable from signal.
+    void waitForLoLock() {
+        constexpr auto kLoLockTimeout = std::chrono::milliseconds(1000);
+        const auto     deadline       = std::chrono::steady_clock::now() + kLoLockTimeout;
+        for (gr::Size_t i = 0U; i < num_channels; i++) {
+            const auto channel = static_cast<std::size_t>(i);
+            const auto sensors = _device.listChannelSensors(SOAPY_SDR_RX, channel);
+            if (std::ranges::find(sensors, "lo_locked") == sensors.end()) {
+                continue;
+            }
+            while (!_device.readChannelSensor(SOAPY_SDR_RX, channel, "lo_locked").starts_with("true")) {
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    this->emitErrorMessage("waitForLoLock()", gr::Error(std::format("channel {} lo_locked reads '{}' after {} ms — tuning has not settled", channel, _device.readChannelSensor(SOAPY_SDR_RX, channel, "lo_locked"), kLoLockTimeout.count())));
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
+    }
+
     void applyClockConfig() {
         if (!clock_source->empty()) {
             if (auto r = _device.setClockSource(clock_source.value); !r) {
                 this->emitErrorMessage("applyClockConfig()", r.error());
             }
+            // Selecting a reference that is not physically present does NOT error —
+            // the device simply free-runs, and every downstream figure silently
+            // becomes unsynchronised. Ask the device whether it actually locked.
+            if (clock_source.value != "internal") {
+                const auto sensors = _device.listSensors();
+                if (std::ranges::find(sensors, "ref_locked") != sensors.end()) {
+                    _reportedRefLocked = _device.readSensor("ref_locked");
+                    if (!_reportedRefLocked.starts_with("true")) {
+                        this->emitErrorMessage("applyClockConfig()", gr::Error(std::format("clock_source='{}' selected but ref_locked reads '{}' — the device is free-running", clock_source.value, _reportedRefLocked)));
+                    }
+                }
+            }
         }
+        _reportedClockSource = _device.getClockSource();
+        _reportedTimeSource  = _device.getTimeSource();
         if (!time_source->empty()) {
             if (auto r = _device.setTimeSource(time_source.value); !r) {
                 this->emitErrorMessage("applyClockConfig()", r.error());

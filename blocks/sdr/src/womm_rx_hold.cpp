@@ -33,9 +33,13 @@
 // is committed here.
 //
 // B2xx NOTE, because it is the usual reason a second channel stays dark: with
-// two channels active the device's master clock rate is capped near 30.72 MHz,
-// so each channel must stay under that. The 20 MS/s default below is inside it.
-// Asking for 43 MS/s on two channels will not work and is not a gr4 defect.
+// two channels active UHD caps the master clock rate at 30.72 MHz, and the
+// per-channel rate is MCR/decimation - so 15.36 MS/s per channel is the ceiling,
+// 30.72 MS/s aggregate per radio. Asking for 20 MS/s on two channels does not
+// work and is not a gr4 defect.
+//
+// Antenna names are TX/RX and RX2 - in that order, as the device spells them.
+// "RX/TX" is a natural thing to type and is not a name the device knows.
 
 #include <algorithm>
 #include <array>
@@ -75,7 +79,7 @@ inline constexpr double      kReadyTimeout = 60.0;   // B210 bring-up is ~2.5 s;
 inline constexpr double kTwoChannelMcrHz = 30.72e6;
 inline constexpr double kDefaultRate     = kTwoChannelMcrHz / 2.0;
 
-inline constexpr std::array<std::string_view, 2> kRxOnlyAntennae{"RX2", "RX/TX"};
+inline constexpr std::array<std::string_view, 2> kRxOnlyAntennae{"RX2", "TX/RX"};
 
 void mustConnect(auto&& r, std::string_view what) {
     if (!r.has_value()) {
@@ -113,8 +117,15 @@ gr::property_map radioConfig(const std::string& serial, double rateHz, const std
         {"rx_antennae", std::vector<std::string>(kChannels, antenna)},
         {"max_time_out_us", std::uint32_t{1000000}},
         {"max_overflow_count", gr::Size_t{0}}, // never stop; this run is about liveness, not overflow
-        {"emit_timing_tags", false},
-        {"emit_meta_info", false},
+        // Many buffers between tags. num_recv_frames is the USB transfer-buffer depth:
+        // deep enough that host scheduling jitter cannot perturb arrival, which is the
+        // thing being measured once the radios are locked. Tags stay ON — they are how
+        // the device reports its own time back — but at one per second, so the read
+        // loop is not building a property_map per chunk.
+        {"stream_args", std::format("num_recv_frames={}", std::getenv("WOMM_RECV_FRAMES") ? std::getenv("WOMM_RECV_FRAMES") : "1024")},
+        {"emit_timing_tags", true},
+        {"emit_meta_info", true},
+        {"tag_interval", 1.0f},
     };
 
     cfg["master_clock_rate"] = kTwoChannelMcrHz;
@@ -131,6 +142,10 @@ gr::property_map radioConfig(const std::string& serial, double rateHz, const std
     if (const char* env = std::getenv("WOMM_EXTCLK"); env && std::string_view(env) == "1") {
         cfg["clock_source"] = std::string("external");
         cfg["time_source"]  = std::string("external");
+        // Absolute instant on the shared epoch that set_time_unknown_pps() establishes.
+        // Must clear the ~2 s that call blocks for, and must be the SAME literal in
+        // every process — it is the only thing making the three radios start together.
+        cfg["start_time_offset"] = 5.0f;
     }
     return cfg;
 }
@@ -139,7 +154,7 @@ int main(int argc, char* argv[]) {
     using namespace std::string_literals;
 
     const double      rateHz  = argc > 1 ? std::atof(argv[1]) : kDefaultRate;
-    const std::string antenna = argc > 2 ? argv[2] : "RX2";
+    const std::string antenna = argc > 2 ? argv[2] : "TX/RX"; // where the antennas are actually connected
 
     if (std::ranges::find(kRxOnlyAntennae, antenna) == kRxOnlyAntennae.end()) {
         std::println(stderr, "refusing to run: '{}' is not on the receive-only antenna allow-list", antenna);
