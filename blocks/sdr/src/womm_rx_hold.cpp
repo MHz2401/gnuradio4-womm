@@ -64,6 +64,7 @@
 #include <gnuradio-4.0/fileio/BasicFileIo.hpp>
 #include <gnuradio-4.0/sdr/SoapySource.hpp>
 #include <gnuradio-4.0/testing/NullSources.hpp>
+#include <gnuradio-4.0/testing/TagMonitors.hpp>
 
 using TRadio = std::complex<float>;
 
@@ -168,6 +169,7 @@ int main(int argc, char* argv[]) {
 
     const double      rateHz     = argc > 1 ? std::atof(argv[1]) : envOr("WOMM_RATE", kDefaultRate);
     const double      captureSec = envOr("WOMM_CAPTURE_SEC", 0.0);
+    const bool        tagMode    = std::getenv("WOMM_TAGS") != nullptr;
     const std::string captureDir = std::getenv("WOMM_CAPTURE_DIR") ? std::getenv("WOMM_CAPTURE_DIR") : "data";
     const std::string antenna = argc > 2 ? argv[2] : "TX/RX"; // where the antennas are actually connected
 
@@ -212,8 +214,11 @@ int main(int argc, char* argv[]) {
 
     // A port feeds exactly one consumer, so capture REPLACES the counting sink
     // rather than tapping alongside it. Liveness then comes from bytes written.
+    using TTagSink = gr::testing::TagSink<TRadio, gr::testing::ProcessFunction::USE_PROCESS_BULK>;
+
     std::array<gr::testing::CountingSink<TRadio>*, kChannels>        sinks{};
     std::array<gr::blocks::fileio::BasicFileSink<TRadio>*, kChannels> fileSinks{};
+    std::array<TTagSink*, kChannels>                                  tagSinks{};
 
     if (captureSec > 0.0) {
         std::filesystem::create_directories(captureDir);
@@ -225,6 +230,16 @@ int main(int argc, char* argv[]) {
             auto&             sink = graph.emplaceBlock<gr::blocks::fileio::BasicFileSink<TRadio>>({{"file_name", path}, {"max_bytes_per_file", capBytes}});
             mustConnect(graph.connect(src, std::format("out#{}", ch), sink, "in"s), std::format("src out#{} -> file sink", ch));
             fileSinks[ch] = std::addressof(sink);
+        }
+    } else if (tagMode) {
+        // TagSink is upstream's, not ours - it already records tags with their sample
+        // index and exposes a per-tag callback. log_samples MUST be off: it defaults
+        // true and would accumulate every sample into a Tensor, which at 15 MS/s is
+        // gigabytes within seconds.
+        for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
+            auto& sink = graph.emplaceBlock<TTagSink>({{"log_tags", true}, {"log_samples", false}, {"verbose_console", false}, {"sample_rate", static_cast<float>(rateHz)}});
+            mustConnect(graph.connect(src, std::format("out#{}", ch), sink, "in"s), std::format("src out#{} -> tag sink", ch));
+            tagSinks[ch] = std::addressof(sink);
         }
     } else {
         for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
@@ -273,7 +288,13 @@ int main(int argc, char* argv[]) {
     const auto counts = [&] {
         std::array<gr::Size_t, kChannels> c{};
         for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
-            c[ch] = fileSinks[ch] ? static_cast<gr::Size_t>(fileSinks[ch]->_totalBytesWritten / sizeof(TRadio)) : sinks[ch]->count.value;
+            if (fileSinks[ch]) {
+                c[ch] = static_cast<gr::Size_t>(fileSinks[ch]->_totalBytesWritten / sizeof(TRadio));
+            } else if (tagSinks[ch]) {
+                c[ch] = tagSinks[ch]->_nSamplesProduced;
+            } else {
+                c[ch] = sinks[ch]->count.value;
+            }
         }
         return c;
     };
@@ -329,6 +350,34 @@ int main(int argc, char* argv[]) {
             std::println("       device_time {}.{:09d} s", dev / 1'000'000'000, dev % 1'000'000'000);
         } else {
             std::println("       device_time UNAVAILABLE (no SOAPY_SDR_HAS_TIME on reads)");
+        }
+        if (tagMode && tagSinks[0]) {
+            const auto& tags = tagSinks[0]->_tags;
+            if (!tags.empty()) {
+                const auto& last = tags.back();
+                // device_time_ns is nested inside the tag's meta-info sub-map, not at
+                // the top level: emitTimingTag puts device metadata under
+                // tag::TRIGGER_META_INFO. pmt::Value::get_if is a MEMBER, not free.
+                std::int64_t devNs = 0;
+                bool         found = false;
+                for (const auto& [k, v] : last.map) {
+                    const auto* meta = v.get_if<gr::pmt::Value::Map>();
+                    if (meta == nullptr) {
+                        continue;
+                    }
+                    for (const auto& [mk, mv] : *meta) {
+                        if (std::string_view(mk) == "device_time_ns") {
+                            if (const auto* p = mv.get_if<std::int64_t>()) {
+                                devNs = *p;
+                                found = true;
+                            }
+                        }
+                    }
+                }
+                std::println("       tags {} on ch0, last @ sample {}{}", tags.size(), last.index, found ? std::format(", device_time_ns {}", devNs) : ", (no device_time_ns in tag)");
+            } else {
+                std::println("       tags 0 on ch0");
+            }
         }
         std::println("");
         prev  = cur;

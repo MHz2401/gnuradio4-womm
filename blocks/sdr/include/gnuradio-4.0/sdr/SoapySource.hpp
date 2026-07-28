@@ -107,6 +107,7 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     std::string                            _clockTriggerName;
     bool                                   _firstEmission  = true;
     std::uint64_t                          _lastTagTimeNs  = 0UL;
+    std::uint64_t                          _samplesSinceTag = 0UL;
     float                                  _prevSampleRate = 0.f;
     double                                 _prevFrequency  = 0.0;
     filter::Filter<float>                  _dcFilterI;
@@ -183,6 +184,7 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
         _clockTriggerName.clear();
         _firstEmission    = true;
         _lastTagTimeNs    = 0UL;
+        _samplesSinceTag  = 0UL;
         _ppmLastEmitted   = 0.0f;
         _clockEosReceived = false;
         _ioThreadStarted.store(false, std::memory_order_relaxed);
@@ -329,8 +331,17 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                 }
 
                 if (emit_timing_tags) {
-                    auto intervalNs = static_cast<std::uint64_t>(tag_interval.value * 1e9f);
-                    if (intervalNs == 0UL || _lastTagTimeNs == 0UL || (tWallNs - _lastTagTimeNs) >= intervalNs) {
+                    // Gate on SAMPLES, not on the host clock. tag_interval is still
+                    // expressed in seconds, but it is converted through sample_rate so
+                    // the tag lands at a deterministic sample index: two identical
+                    // captures get tags in identical places, and host scheduling jitter
+                    // cannot move them. Chunk size sets the granularity - a tag can only
+                    // land on a chunk boundary, so the true period is
+                    // ceil(rate*interval / chunk) chunks.
+                    const auto intervalSamples = static_cast<std::uint64_t>(static_cast<double>(sample_rate.value) * static_cast<double>(tag_interval.value));
+                    _samplesSinceTag += nCopy;
+                    if (intervalSamples == 0UL || _lastTagTimeNs == 0UL || _samplesSinceTag >= intervalSamples) {
+                        _samplesSinceTag = 0UL;
                         emitTimingTag(nCopy, tWallNs);
                         _lastTagTimeNs = tWallNs;
                     }
@@ -420,8 +431,17 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                 }
 
                 if (emit_timing_tags) {
-                    auto intervalNs = static_cast<std::uint64_t>(tag_interval.value * 1e9f);
-                    if (intervalNs == 0UL || _lastTagTimeNs == 0UL || (tWallNs - _lastTagTimeNs) >= intervalNs) {
+                    // Gate on SAMPLES, not on the host clock. tag_interval is still
+                    // expressed in seconds, but it is converted through sample_rate so
+                    // the tag lands at a deterministic sample index: two identical
+                    // captures get tags in identical places, and host scheduling jitter
+                    // cannot move them. Chunk size sets the granularity - a tag can only
+                    // land on a chunk boundary, so the true period is
+                    // ceil(rate*interval / chunk) chunks.
+                    const auto intervalSamples = static_cast<std::uint64_t>(static_cast<double>(sample_rate.value) * static_cast<double>(tag_interval.value));
+                    _samplesSinceTag += nSamples;
+                    if (intervalSamples == 0UL || _lastTagTimeNs == 0UL || _samplesSinceTag >= intervalSamples) {
+                        _samplesSinceTag = 0UL;
                         emitTimingTag(nSamples, tWallNs);
                         _lastTagTimeNs = tWallNs;
                     }

@@ -249,6 +249,7 @@ Update as necessary.  Most of these are or should be updated.
 | File | Contents |
 |---|---|
 | `BUILD_JOURNAL.md` | append-only decisions D1–D7, with rationale and how to reverse |
+| `SPRINT.md` | **formal sprint record** — sprint 1 milestones/defects/retractions, sprint 2 backlog |
 | `RESULTS.md` | all measurements, including the retraction in Phase 3.5c |
 | `DRIFT.md` | every local deviation; Category E is the cherry-pick provenance + licensing |
 | `MANIFEST.md` | dependency provenance, §8 upstream sync policy |

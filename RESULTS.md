@@ -1630,3 +1630,49 @@ more 2401 MHz traffic and needed 2-4 outliers rejected.
 
 Validated in **both** directions before use, which §9.7's instrument never was: synthetic comb at
 known +1234.0 / -3210.0 Hz recovered as +1233.9 / -3210.0 (0.1 Hz error); pure noise rejected.
+
+### 9.12 Tags: sample-deterministic placement, read from the published stream
+
+Two owner-directed changes, and one correction to my own plan.
+
+**`TagSink` already existed.** `blocks/testing/.../TagMonitors.hpp:376`, alongside `TagMonitor` — it
+records tags with their sample index and exposes a per-tag callback. I had it queued as "build a
+tag-capturing sink". Checked before building, per `CLAUDE.md` §8.5. One trap: `log_samples` defaults
+**true**, which at 15 MS/s accumulates every sample into a `Tensor` — gigabytes within seconds. Off.
+
+**Tag placement now gates on SAMPLES, not the host clock.** It previously compared
+`tWallNs - _lastTagTimeNs` against `tag_interval`, so tag positions depended on host scheduling —
+the same dependency that invalidated §9.7's instrument. `tag_interval` is still expressed in
+seconds but is converted through `sample_rate`, so a tag lands at a deterministic sample index and
+two identical captures get tags in identical places.
+
+Measured, 0.512 MS/s, `tag_interval` 1 s, `max_chunk_size` 8192:
+
+| tag | sample index | device_time_ns |
+|---|---|---|
+| 3 | 516096 | 6008070991 |
+| 4 | 1032192 | 7016070991 |
+| 5 | 1548288 | 8024070990 |
+| 6 | 2064384 | 9032070989 |
+
+**Interval exactly 516096 samples every time** = `ceil(512000/8192) = 63` chunks = 1.008 s. A tag can
+only land on a chunk boundary, so that is the true achievable period, and it is now *constant*
+rather than wobbling with host load. The device-clock deltas are **1.008000000 s exactly**, agreeing
+with the sample count to the nanosecond — two independent clocks confirming each other.
+
+**This closes the instrument chain.** §9.7 retracted a host-derived measurement; §9.8 captured the
+device timestamp; §9.9 used it for epoch alignment via a block member; §9.12 moves it onto published
+tags, which is what an application actually consumes.
+
+### 9.13 The cross-process arming barrier is NOT defined — stated because it was assumed
+
+The owner asked whether it is clearly defined anywhere. **It is not.** It exists only as an
+implementation in `womm_bmax.cpp:233-246` plus a passing mention at `RESULTS.md:1241`. No contract,
+no stated guarantee, no failure modes. §9.9 and §9.10 both proposed "a cross-process arming barrier
+would make the shared epoch structural" as though referring to a defined thing.
+
+What it currently does: each process touches `${WOMM_BARRIER_DIR}/ready.<pid>`, then polls until
+`WOMM_BARRIER_N` such files exist, with a 120 s deadline. What it does **not** do is bound the
+window between the last arrival and any subsequent action, which is the only property that would
+make PPS-edge agreement structural rather than observed. Specifying it is sprint-2 work, not a
+one-line reuse.
