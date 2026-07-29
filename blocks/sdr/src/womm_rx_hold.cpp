@@ -115,7 +115,7 @@ std::vector<std::string> discoverSerials() {
 // broadcast-from-one-element behaviour: applyFrequency() verifies the readback
 // against the vector it was given, so a one-element vector against two channels
 // reports a spurious mismatch.
-gr::property_map radioConfig(const std::string& serial, double rateHz, const std::string& antenna) {
+gr::property_map radioConfig(const std::string& serial, double rateHz, const std::string& antenna, std::uint32_t chunkSize) {
     const double freqHz = envOr("WOMM_FREQ", kCentreFreqHz);
     const double gainDb = envOr("WOMM_GAIN", kRxGainDb);
     using namespace std::string_literals;
@@ -136,6 +136,7 @@ gr::property_map radioConfig(const std::string& serial, double rateHz, const std
         // thing being measured once the radios are locked. Tags stay ON — they are how
         // the device reports its own time back — but at one per second, so the read
         // loop is not building a property_map per chunk.
+        {"max_chunk_size", chunkSize},
         {"stream_args", std::format("num_recv_frames={}", std::getenv("WOMM_RECV_FRAMES") ? std::getenv("WOMM_RECV_FRAMES") : "1024")},
         {"emit_timing_tags", true},
         {"emit_meta_info", true},
@@ -209,8 +210,23 @@ int main(int argc, char* argv[]) {
         Manager::instance().replacePool(std::string(kDefaultCpuPoolId), std::make_shared<ThreadPoolWrapper>(std::make_unique<BasicThreadPool>(std::string(kDefaultCpuPoolId), TaskType::CPU_BOUND, n, n), "CPU"));
     }
 
+    // A capture can only end on a chunk boundary, so the chunk must be no larger than
+    // the request or short captures are unachievable: 8192 samples at 0.5 MS/s is
+    // 16.4 ms, and nothing briefer could ever be returned. Shrink to the largest power
+    // of two that fits (the setting is power-of-two constrained), floored at 512.
+    std::uint32_t chunkSize = 512U << 4U;
+    if (captureSec > 0.0) {
+        const auto target = static_cast<std::uint64_t>(rateHz * captureSec);
+        while (chunkSize > 512U && static_cast<std::uint64_t>(chunkSize) > target) {
+            chunkSize >>= 1U;
+        }
+    }
+    if (const char* env = std::getenv("WOMM_CHUNK"); env) {
+        chunkSize = static_cast<std::uint32_t>(std::atol(env));
+    }
+
     gr::Graph graph;
-    auto&     src = graph.emplaceBlock<gr::blocks::sdr::SoapySource<TRadio, kChannels>>(radioConfig(serial, rateHz, antenna));
+    auto&     src = graph.emplaceBlock<gr::blocks::sdr::SoapySource<TRadio, kChannels>>(radioConfig(serial, rateHz, antenna, chunkSize));
 
     // A port feeds exactly one consumer, so capture REPLACES the counting sink
     // rather than tapping alongside it. Liveness then comes from bytes written.
@@ -224,9 +240,15 @@ int main(int argc, char* argv[]) {
         std::filesystem::create_directories(captureDir);
         // Hard byte cap derived from the duration, enforced BY THE BLOCK. A comment
         // cannot stop a capture that outlives its stop signal; max_bytes_per_file can.
-        const auto capBytes = static_cast<gr::Size_t>(rateHz * captureSec * static_cast<double>(sizeof(TRadio)) * 1.10);
+        // max_bytes_per_file does NOT stop at the cap - BasicFileIo.hpp:106-108 rolls the
+        // file over, and in overwrite mode that restarts the SAME filename from zero.
+        // So the cap must clear the deliberate overshoot below (target + 4 chunks) or it
+        // silently truncates the very capture it is meant to bound. Sized at +8 chunks:
+        // still a hard bound on a runaway, never reached by a normal capture.
+        const auto capBytes = static_cast<gr::Size_t>((static_cast<std::uint64_t>(rateHz * captureSec) + 8UL * chunkSize) * sizeof(TRadio));
         for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
-            const std::string path = std::format("{}/capture_{}_ch{}.bin", captureDir, serial, ch);
+            const char*       sfx  = std::getenv("WOMM_CAPTURE_SUFFIX");
+            const std::string path = std::format("{}/capture_{}_ch{}{}.bin", captureDir, serial, ch, sfx ? sfx : "");
             auto&             sink = graph.emplaceBlock<gr::blocks::fileio::BasicFileSink<TRadio>>({{"file_name", path}, {"max_bytes_per_file", capBytes}});
             mustConnect(graph.connect(src, std::format("out#{}", ch), sink, "in"s), std::format("src out#{} -> file sink", ch));
             fileSinks[ch] = std::addressof(sink);
@@ -260,7 +282,7 @@ int main(int argc, char* argv[]) {
     std::println("RECEIVE ONLY. {} channels x {:.2f} MS/s = {:.2f} MS/s aggregate, master clock {:.2f} MHz", kChannels, rateHz / 1e6, rateHz * static_cast<double>(kChannels) / 1e6, mcrHz / 1e6);
     std::println("centre {:.6f} MHz, gain {:.0f} dB, antenna {}", envOr("WOMM_FREQ", kCentreFreqHz) / 1e6, envOr("WOMM_GAIN", kRxGainDb), antenna);
     if (captureSec > 0.0) {
-        std::println("CAPTURE {:.2f} s -> {}/capture_{}_ch*.bin  (cap {:.1f} MB/channel)", captureSec, captureDir, serial, rateHz * captureSec * static_cast<double>(sizeof(TRadio)) * 1.10 / 1e6);
+        std::println("CAPTURE {:.4f} s = {} samples/channel, chunk {} -> {}/capture_{}_ch*.bin", captureSec, static_cast<std::uint64_t>(rateHz * captureSec), chunkSize, captureDir, serial);
     }
     std::println("depth 0 — source straight to counting sinks, no DSP");
     std::println("");
@@ -320,18 +342,38 @@ int main(int argc, char* argv[]) {
 
     // In capture mode the duration is the point, so stop on it rather than waiting
     // for the operator. max_bytes_per_file remains as a second, independent bound.
-    std::thread captureTimer;
+    // Duration is enforced by SAMPLE COUNT, not elapsed time. A wall-clock timer plus
+    // a one-second monitor loop turned a 0.2 s request into 0.152 s; the host clock
+    // has no business deciding how many samples a capture contains.
+    const std::uint64_t targetSamples = static_cast<std::uint64_t>(rateHz * captureSec);
+    std::thread         captureTimer;
     if (captureSec > 0.0) {
         captureTimer = std::thread([&] {
-            std::this_thread::sleep_for(std::chrono::duration<double>(captureSec));
-            stopRequested.store(true, std::memory_order_release);
+            while (!stopRequested.load(std::memory_order_acquire)) {
+                const auto c = counts();
+                // Overshoot deliberately: stopping the graph truncates the file's tail,
+                // so aiming exactly at the target lands under it. Capture past the mark
+                // and trim to size afterwards - that is exact, where stopping on time
+                // is not.
+                if (std::ranges::all_of(c, [&](gr::Size_t v) { return static_cast<std::uint64_t>(v) >= targetSamples + 4UL * chunkSize; })) {
+                    stopRequested.store(true, std::memory_order_release);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
         });
     }
 
     auto prev  = counts();
     auto prevT = std::chrono::steady_clock::now();
     while (!stopRequested.load(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        // Sleep in slices, not one second. In capture mode the stop signal must be
+        // acted on promptly: a one-second latency lets the capture run past its byte
+        // cap, and BasicFileSink's cap ROLLS THE FILE OVER rather than stopping, so a
+        // late stop silently restarts the file and the duration is lost.
+        for (int slice = 0; slice < 50 && !stopRequested.load(std::memory_order_acquire); ++slice) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
 
         const auto   now     = std::chrono::steady_clock::now();
         const auto   cur     = counts();
@@ -404,6 +446,31 @@ int main(int argc, char* argv[]) {
     }
     if (waiter.joinable()) {
         waiter.detach(); // may still be blocked in getline() if we stopped for another reason
+    }
+
+    // TRIM TO EXACTLY THE REQUESTED DURATION. The capture ran past it; a file that is
+    // "about" the right length is not a duration, it is an approximation, and the whole
+    // point of expressing capture in samples was to stop approximating.
+    if (captureSec > 0.0) {
+        const auto wantBytes = static_cast<std::uintmax_t>(targetSamples * sizeof(TRadio));
+        for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
+            const char*       sfx  = std::getenv("WOMM_CAPTURE_SUFFIX");
+            const std::string path = std::format("{}/capture_{}_ch{}{}.bin", captureDir, serial, ch, sfx ? sfx : "");
+            std::error_code   ec;
+            const auto        have = std::filesystem::file_size(path, ec);
+            if (ec) {
+                std::println(stderr, "capture {}: {}", path, ec.message());
+                continue;
+            }
+            if (have < wantBytes) {
+                std::println(stderr, "SHORT CAPTURE {}: {} of {} samples — duration NOT honoured", path, have / sizeof(TRadio), targetSamples);
+                continue;
+            }
+            std::filesystem::resize_file(path, wantBytes, ec);
+            if (ec) {
+                std::println(stderr, "trim {}: {}", path, ec.message());
+            }
+        }
     }
 
     const auto final = counts();

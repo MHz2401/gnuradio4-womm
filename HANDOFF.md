@@ -98,6 +98,11 @@ We're working with the early RC of an open-source project that includes unmainta
 - **PUSH REGULARLY to `origin`** — it is our fork.
 - **No pull requests to upstream** (`gnuradio/gnuradio4*`, `fair-acc/gnuradio4`).
 - **Report regressions as prominently as wins.** Label anything not actually measured.
+- **⚠ NO SERIALS, ABSOLUTE PATHS, OR SITE DETAILS IN THE REPOSITORY.** Radio serials, capture
+  directories, RF parameters for a specific test, and anything else that identifies this machine or
+  this site are **semi-secrets** and stay out of version control. Radios are named through
+  `$B210U00 … $B210U03` in the operator's shell; output directories are given on the command line.
+  This is *not* inherited from `CLAUDE.md`, which is someone else's file and does not cover it.
 
 ### ⚠ AUTHORITATIVE SOURCES FOR TIMING (owner, 2026-07-28)
 
@@ -267,7 +272,9 @@ Recorded because each cost real time.
 
 | File | Contents |
 |---|---|
+| `MANUAL.md` | **one-page user manual: `womm-scan` CLI and known-good B210/Soapy parameters** |
 | `SPRINT.md` | **current sprint, milestones, and goals awaiting an owner decision** |
+| `UI_OPTIONS.md` | UI research across the three trees, feeding D10 |
 | `RESULTS.md` | every measurement, including the retractions |
 | `DRIFT.md` | every local deviation; Category E is cherry-pick provenance + licensing |
 | `MANIFEST.md` | dependency provenance, §8 upstream sync policy |
@@ -278,6 +285,7 @@ Recorded because each cost real time.
 | `scripts/vendor.sh` | re-fetches vendored deps at pinned SHAs |
 | `scripts/epoch-check.sh` | N-radio PPS-epoch comparison from `womm_rx_hold` logs |
 | `scripts/spectrum-check.py` | comb detection and per-radio LO calibration from IQ captures |
+| `scripts/womm-scan.sh` | the demo CLI — capture from all present radios, optionally analyse |
 
 Harnesses live in `blocks/sdr/src/`: `womm_rx_hold` (hold-open multi-channel RX; capture and tag
 modes), `womm_bmax` (ballast/deadline probe), `womm_b210_sweep` (rate sweep). All are RX-only by
