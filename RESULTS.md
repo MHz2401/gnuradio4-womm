@@ -2509,3 +2509,58 @@ impressions. What it would need to establish:
 **Licence note for any port:** GR 3.10 is GPL-3.0. Its *design* may be reimplemented in this MIT
 tree; its source may not be copied. The gr4 trees are MIT (`-studio` GPL-3.0), so nothing about
 contributing a barrier upstream is licence-blocked.
+
+### 10.26 ★ THE VENDORED SOAPY IS NOT "SPECIAL" — it is unmodified pothosware master
+
+Owner asked directly whether the diffs between the "special" version we pulled and mainline SoapySDR
+had ever been confirmed. **They had not.** `scripts/verify-vendor.sh` proves the committed trees
+reproduce from our own HEAD — internal consistency, not agreement with pothosware.
+
+Confirmed now, by cloning pothosware and checking out the pinned SHAs:
+
+| tree | pinned SHA | date | vs pothosware at that SHA |
+|---|---|---|---|
+| SoapySDR | `1551ea0d` | 2026-01-02 | **byte-identical**, 168 files each |
+| SoapyUHD | `2a5d381f` | 2025-10-05 | **byte-identical** |
+
+**Instrument controlled**, per this project's own rule: injecting a one-character change into a
+vendored file makes the diff report it, so the empty result means "identical", not "compared nothing".
+
+The two womm patches (`cxx17-for-uhd-4.10`, `boost-190-lexical-cast`) are applied at **build time**
+from `patches/womm/` (`scripts/build-prefix.sh:37`), so the vendored *source* is pristine upstream
+and only the *built module* differs. There is no forked or hand-modified Soapy in this project.
+
+### And GR 3.10 does not pin SoapySDR either
+
+`gr-soapy/CMakeLists.txt:15` — `find_package(SoapySDR 0.7.2)`. A **minimum, not a pin.** Ours reports
+`v0.8.1-g17e590ba`, ABI `v0.8-3`, which satisfies it comfortably and is the same 0.8.1 family the
+distributions ship. So "the version they use" is not a specific thing in 3.10 any more than it is in
+gr4 (§10.22).
+
+**Consequence for the mailing-list question:** we are on plain upstream master of both components, so
+the question cannot be deflected as "you are on a fork we do not recognise".
+
+### ⚠ But the owner's predicted deflection (A) is still likely — and would be correct
+
+*"this is a question for Soapy maintainers"*. The bare `activate()` is **not** in SoapySDR. It is in
+**gnuradio4's own** `SoapySource.hpp:184`, calling Soapy's API without the time flag. So it is a
+gnuradio4 question and can be framed that way from the start, with the file and line.
+
+### Why nobody upstream has hit H-1 — the HackRF observation explains it
+
+The owner: *"I think the soapySDR in GR3 can launch multiple HackRFs, so I don't see why it wouldn't
+launch multiple UHDs."* It does, and that is the distinction worth being precise about:
+
+| | what it needs | does it hit H-1? |
+|---|---|---|
+| **multiple devices** — 4 HackRFs, or 4 B210s | independent Soapy device objects, one per radio | **no** |
+| **multiple channels on ONE device** — a B210's 2 RX | one streamer spanning both, which UHD requires be **timed** | **yes** |
+
+**H-1 is a multi-channel problem, not a multi-device one.** HackRF and RTL-SDR have a single RX
+channel each, so a maintainer testing with them can never reach it. The B2xx is the cheapest
+multi-channel device in common use, and gr4's `GR4_ENABLE_SDR` is OFF by default with no CI covering
+it (§10.22).
+
+So the honest framing for a mailing-list question is not "your code is broken" but "has anyone run a
+multi-channel device here?" — and the evidence says no. That also predicts deflection (B), *"what do
+you mean?"*, is a genuine question rather than a brush-off.
