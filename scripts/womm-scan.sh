@@ -18,6 +18,7 @@ TIME=0.2
 GAIN=20
 OUT=""
 ANALYSE=0
+FAILED=0
 
 usage() {
     sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
@@ -94,17 +95,27 @@ echo "  out:    $OUT"
 echo
 
 for s in $WANT; do
-    printf '  %-10s ' "$s"
-    WOMM_SERIAL="$s" WOMM_FREQ="$FREQ" WOMM_RATE="$RATE" WOMM_GAIN="$GAIN" \
-    WOMM_MCR=30e6 WOMM_EXTCLK="${WOMM_EXTCLK:-1}" \
-    WOMM_CAPTURE_SEC="$TIME" WOMM_CAPTURE_DIR="$OUT" WOMM_CAPTURE_SUFFIX="$SUFFIX" \
-    WOMM_MAX_SEC=120 "$BIN" </dev/null 2>&1 \
-      | grep -E "verdict|free-running|SHORT CAPTURE" | head -2 || true
+    # Collect first, print after. Piping straight to the terminal leaves a dangling
+    # label when a radio dies without emitting a matching line, and reports silence as
+    # though it were success.
+    out=$(WOMM_SERIAL="$s" WOMM_FREQ="$FREQ" WOMM_RATE="$RATE" WOMM_GAIN="$GAIN" \
+          WOMM_MCR=30e6 WOMM_EXTCLK="${WOMM_EXTCLK:-1}" \
+          WOMM_CAPTURE_SEC="$TIME" WOMM_CAPTURE_DIR="$OUT" WOMM_CAPTURE_SUFFIX="$SUFFIX" \
+          WOMM_MAX_SEC=120 "$BIN" </dev/null 2>&1 \
+          | grep -E "verdict|free-running|SHORT CAPTURE" || true)
+    if [ -z "$out" ]; then
+        printf '  %-10s NO RESULT - radio produced no verdict (crash, or no samples)\n' "$s"
+        FAILED=1
+    else
+        printf '  %-10s %s\n' "$s" "$(echo "$out" | head -3 | tr '\n' ' ')"
+    fi
 done
 
 echo
 ls -l "$OUT"/capture_*"$SUFFIX".bin 2>/dev/null \
   | awk '{printf "  %s  %.2f MB\n", $NF, $5/1e6}' || echo "  (no files written)"
+
+[ "$FAILED" -eq 0 ] || echo "  ⚠ at least one radio produced no result"
 
 if [ "$ANALYSE" -eq 1 ]; then
     echo

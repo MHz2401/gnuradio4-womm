@@ -11,6 +11,29 @@ measurements, and a table of goals awaiting an owner decision. This document is 
 
 ---
 
+## ⚠ `CLAUDE.md` IS UPSTREAM'S FILE, NOT THE OWNER'S
+
+**`CLAUDE.md` in this repository was inherited from `gnuradio/gnuradio4`.** It is the GNU Radio 4
+project's own style guide, written for contributors to the upstream tree. **It is not Walter's
+personal or local instruction file, and it was not written with this fork in mind.**
+
+Most of it is aligned and worth following — naming, struct layout, the documentation policy, the
+AI-anti-pattern list. But some of it is a **non-sequitur in this project's context**, and where it
+conflicts, the owner's instructions and this document win. Known conflicts, all deliberate:
+
+| `CLAUDE.md` says | here | why |
+|---|---|---|
+| limit builds to `-j6` | **`-j16`** | I-5: measured peak 11.4 GiB across 16 compilers = 6 % of RAM |
+| GCC 15 is the primary compiler | **Apple clang 21 + libc++** | I-2: upstream's own macOS CI uses clang/libc++, and GCC is not the path here |
+| conventions aimed at upstream PRs and public-repo QA | **"Works On My Mac" prevails** | D9: no consideration in support of a PR may constrain it |
+| nothing about secrets | **serials, absolute paths and site details stay out of the repo** | it is someone else's file; it does not cover this |
+
+**When `CLAUDE.md` and this document disagree, this document is authoritative.** When in doubt,
+ask — do not silently follow upstream's guide into a decision the owner has already made
+differently.
+
+---
+
 ## WHAT THIS PROJECT IS
 
 Produce the most stable and performant working build of **gnuradio4** on a Mac Studio M2 Ultra,
@@ -272,6 +295,7 @@ Recorded because each cost real time.
 
 | File | Contents |
 |---|---|
+| `WoMM_README.md` | **cheat sheet: everything unique to this fork, and where it is** |
 | `MANUAL.md` | **one-page user manual: `womm-scan` CLI and known-good B210/Soapy parameters** |
 | `SPRINT.md` | **current sprint, milestones, and goals awaiting an owner decision** |
 | `UI_OPTIONS.md` | UI research across the three trees, feeding D10 |
