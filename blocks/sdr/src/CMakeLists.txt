@@ -110,3 +110,22 @@ add_custom_command(
     ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_mt_test> -P
     ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
   COMMENT "womm: verifying womm_mt_test links no transmit path")
+
+# womm: S2-3 - operations under load. Injects one named operation at a known instant
+# and records what the driver sensed either side of it, attributed on the device clock.
+add_executable(womm_ops womm_ops.cpp)
+target_link_libraries(
+  womm_ops
+  PRIVATE gnuradio-options
+          gnuradio-core
+          gnuradio-blocklib-core
+          gr-sdr
+          gr-testing)
+
+add_custom_command(
+  TARGET womm_ops
+  POST_BUILD
+  COMMAND
+    ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_ops> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
+  COMMENT "womm: verifying womm_ops links no transmit path")

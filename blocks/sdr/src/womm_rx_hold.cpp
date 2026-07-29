@@ -384,6 +384,13 @@ int main(int argc, char* argv[]) {
             const double mss   = static_cast<double>(delta) / elapsed / 1e6;
             std::println("  ch{}  {:>14} samples  {:>7.2f} MS/s  {}", ch, cur[ch], mss, delta == 0U ? "*** NO DATA ***" : "");
         }
+        // Reported, not merely bounded. This harness previously only set
+        // max_overflow_count=0 ("never stop") and printed nothing, so a run that
+        // overflowed throughout looked exactly like one that did not - and the
+        // "zero overflows" attached to earlier full-rate results was read from the
+        // sample ratio, never from this counter.
+        std::println("       events  ovf {}  tmo {}  unf {}  cor {}  err {}", src._overflowCount.load(std::memory_order_relaxed), src._timeoutCount.load(std::memory_order_relaxed), src._underflowCount.load(std::memory_order_relaxed), src._corruptionCount.load(std::memory_order_relaxed), src._streamErrorCount.load(std::memory_order_relaxed));
+
         // The DEVICE's clock, not the host's. This is the only quantity that can
         // establish inter-radio epoch alignment; host timestamps carry scheduling
         // jitter orders of magnitude larger than the effect.

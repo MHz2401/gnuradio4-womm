@@ -102,6 +102,25 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     bool                                   _ioThreadDone = true;
     std::atomic<gr::Size_t>                _overflowCount{0U}; // MONOTONIC; cleared only by an application-space reset
     std::atomic<gr::Size_t>                _fragmentCount{0U};
+
+    // The rest of what the driver senses. SoapyUHD maps every UHD rx_metadata error
+    // code onto four Soapy codes (vendor/SoapyUHD/SoapyUHDDevice.cpp:318-324), and
+    // until now only OVERFLOW was counted: TIMEOUT was discarded by a bare `continue`
+    // and the other two reached the caller as a bare number after the graph had
+    // already been stopped. All MONOTONIC, on the same contract as _overflowCount.
+    //
+    // NOTE ON "UNDERFLOW": Soapy defines it as a WRITE condition (Errors.h:65) and
+    // SoapyUHD never returns it on a receive stream, so _underflowCount is defensive
+    // only - another driver may. The receive-side analogue of underflow, i.e. the host
+    // asking for samples and being given none, is TIMEOUT.
+    std::atomic<gr::Size_t> _timeoutCount{0U};
+    std::atomic<gr::Size_t> _underflowCount{0U};
+    std::atomic<gr::Size_t> _corruptionCount{0U};
+    std::atomic<gr::Size_t> _streamErrorCount{0U};
+
+    // How long each channel's synthesiser actually took to report lo_locked. Measured
+    // on every reinitDevice(), so a boot reports it whether or not a signal is present.
+    std::vector<double> _loLockMs{};
     std::int64_t                           _clockOffsetNs    = 0;
     bool                                   _clockOffsetValid = false;
     std::string                            _clockTriggerName;
@@ -179,6 +198,11 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     void start() {
         _overflowCount.store(0U, std::memory_order_relaxed);
         _fragmentCount.store(0U, std::memory_order_relaxed);
+        _timeoutCount.store(0U, std::memory_order_relaxed);
+        _underflowCount.store(0U, std::memory_order_relaxed);
+        _corruptionCount.store(0U, std::memory_order_relaxed);
+        _streamErrorCount.store(0U, std::memory_order_relaxed);
+        _loLockMs.clear();
         _clockOffsetNs    = 0;
         _clockOffsetValid = false;
         _clockTriggerName.clear();
@@ -287,6 +311,12 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                 int       ret     = _rxStream.readStream(flags, time_ns, max_time_out_us, std::span<T>(readBuf));
 
                 if (ret == SOAPY_SDR_TIMEOUT) {
+                    // The receive-side starvation event: the host asked and was given
+                    // nothing. Counted, deliberately NOT tagged - an overflow marks a
+                    // discontinuity in delivered samples and so has a sample offset to
+                    // anchor to, whereas a timeout delivered no samples at all and has
+                    // no position in the stream to attach itself to.
+                    _timeoutCount.fetch_add(1U, std::memory_order_relaxed);
                     continue;
                 }
                 if (ret < 0) {
@@ -374,6 +404,12 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                 int ret = _rxStream.readStreamIntoBufferList(flags, time_ns, static_cast<long>(max_time_out_us.value), spans);
 
                 if (ret == SOAPY_SDR_TIMEOUT) {
+                    // The receive-side starvation event: the host asked and was given
+                    // nothing. Counted, deliberately NOT tagged - an overflow marks a
+                    // discontinuity in delivered samples and so has a sample offset to
+                    // anchor to, whereas a timeout delivered no samples at all and has
+                    // no position in the stream to attach itself to.
+                    _timeoutCount.fetch_add(1U, std::memory_order_relaxed);
                     continue;
                 }
                 if (ret < 0) {
@@ -541,6 +577,13 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                     tag::put(metaInfo, "clock_offset_ns", _clockOffsetNs);
                 }
 
+                // Repeated on every timing tag rather than only the first, so a consumer
+                // that joins mid-stream can still tell whether this radio's synthesiser
+                // settled promptly at boot or crawled.
+                if (!_loLockMs.empty()) {
+                    tag::put(metaInfo, "lo_lock_ms", _loLockMs);
+                }
+
                 emitChangedParams(metaInfo);
                 tag::put(tagMap, tag::TRIGGER_META_INFO, std::move(metaInfo));
             }
@@ -648,20 +691,31 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
 
     void waitForLoLock() {
         constexpr auto kLoLockTimeout = std::chrono::milliseconds(1000);
-        const auto     deadline       = std::chrono::steady_clock::now() + kLoLockTimeout;
+        constexpr auto kPollInterval  = std::chrono::milliseconds(2);
+        _loLockMs.assign(static_cast<std::size_t>(num_channels.value), -1.0); // -1: channel exposes no lo_locked sensor
         for (gr::Size_t i = 0U; i < num_channels; i++) {
             const auto channel = static_cast<std::size_t>(i);
             const auto sensors = _device.listChannelSensors(SOAPY_SDR_RX, channel);
             if (std::ranges::find(sensors, "lo_locked") == sensors.end()) {
                 continue;
             }
+            // Per channel, not shared across them. One deadline for the whole loop gave
+            // each channel only what the earlier ones left, so a slow channel 0 could
+            // time out a channel 1 that had not yet been given a chance to lock.
+            const auto start    = std::chrono::steady_clock::now();
+            const auto deadline = start + kLoLockTimeout;
             while (!_device.readChannelSensor(SOAPY_SDR_RX, channel, "lo_locked").starts_with("true")) {
                 if (std::chrono::steady_clock::now() >= deadline) {
                     this->emitErrorMessage("waitForLoLock()", gr::Error(std::format("channel {} lo_locked reads '{}' after {} ms — tuning has not settled", channel, _device.readChannelSensor(SOAPY_SDR_RX, channel, "lo_locked"), kLoLockTimeout.count())));
                     break;
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                std::this_thread::sleep_for(kPollInterval);
             }
+            // Retained, not just waited on: the settle time is reported by the device on
+            // every boot regardless of what is on the air, which makes it measurable
+            // without a transmitter. Resolution is the poll interval; a channel already
+            // locked on entry records ~0.
+            _loLockMs[channel] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         }
     }
 
@@ -912,15 +966,26 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
         }
     }
 
-    void emitOverflowTag() {
+    // Carries the DEVICE's timestamp, not the host's. An event attributed on the host
+    // clock inherits scheduling jitter far larger than the operation being blamed for
+    // it, so on a disciplined multi-radio set-up the host time cannot say which radio
+    // saw the event first. "rx_overflow" is unchanged as a key and stays canonical
+    // (Tag.hpp:206); the others are ours.
+    void emitEventTag(std::string_view key) {
+        const auto stamp = [this, key](property_map& tagMap) {
+            tag::put(tagMap, key, true);
+            if (_deviceTimeValid.load(std::memory_order_relaxed)) {
+                tag::put(tagMap, "device_time_ns", _lastDeviceTimeNs.load(std::memory_order_relaxed));
+            }
+        };
         if constexpr (nPorts == 1U) {
             auto tagMap = out.makeTagMap();
-            tag::put(tagMap, "rx_overflow", true);
+            stamp(tagMap);
             out.publishTag(std::move(tagMap), 0UZ);
         } else {
             for (std::size_t ch = 0UZ; ch < out.size(); ++ch) {
                 auto tagMap = out[ch].makeTagMap();
-                tag::put(tagMap, "rx_overflow", true);
+                stamp(tagMap);
                 out[ch].publishTag(std::move(tagMap), 0UZ);
             }
         }
@@ -940,7 +1005,7 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
             // is the driver's business rather than the application's.
             const gr::Size_t total = _overflowCount.fetch_add(1U, std::memory_order_relaxed) + 1U;
 
-            emitOverflowTag(); // the downstream-visible signal; always published
+            emitEventTag("rx_overflow"); // the downstream-visible signal; always published
 
             // Sparse when frequent, immediate when not: every occurrence while rare,
             // then powers of two, so a sustained overrun costs O(log n) lines rather
@@ -961,12 +1026,33 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
             // Reading straight through lets the device recover on its own.
             return true;
         }
+        case SOAPY_SDR_UNDERFLOW: {
+            // Defensive: SoapyUHD cannot produce this on a receive stream, so reaching
+            // here means a different driver. Counting it beats the `default` branch,
+            // which would stop the graph on a condition we have never characterised.
+            const gr::Size_t total = _underflowCount.fetch_add(1U, std::memory_order_relaxed) + 1U;
+            emitEventTag("rx_underflow");
+            if (verbose_overflow && (total <= 4U || std::has_single_bit(total))) {
+                std::println(stderr, "[SoapySource] underflow #{}", total);
+            }
+            return true;
+        }
         case SOAPY_SDR_CORRUPTION:
+            // Tag BEFORE stopping. A fatal event that is only reported through the
+            // error channel cannot be placed in the sample stream afterwards, which
+            // leaves a consumer unable to say where in the data it happened.
+            _corruptionCount.fetch_add(1U, std::memory_order_relaxed);
+            emitEventTag("rx_corruption");
             this->emitErrorMessage("ioReadLoop()", "CORRUPTION");
             this->requestStop();
             return false;
         default:
-            this->emitErrorMessage("ioReadLoop()", std::format("stream error: {}", ret));
+            // SOAPY_SDR_STREAM_ERROR (-2) arrives here, and on UHD it is precisely
+            // LATE_COMMAND or BROKEN_CHAIN (SoapyUHDDevice.cpp:323-324) - the number
+            // alone does not say which, so name both rather than neither.
+            _streamErrorCount.fetch_add(1U, std::memory_order_relaxed);
+            emitEventTag("rx_stream_error");
+            this->emitErrorMessage("ioReadLoop()", std::format("stream error: {} (on UHD: LATE_COMMAND or BROKEN_CHAIN)", ret));
             this->requestStop();
             return false;
         }

@@ -69,6 +69,7 @@ void mustConnect(auto&& r, std::string_view what) {
 
 struct RadioTap {
     std::string                                                       serial;
+    gr::blocks::sdr::SoapySource<TRadio, kChannels>*                  src = nullptr;
     std::array<gr::testing::CountingSink<TRadio>*, kChannels>         sinks{};
     std::array<gr::blocks::fileio::BasicFileSink<TRadio>*, kChannels> files{};
 
@@ -146,7 +147,7 @@ int main(int argc, char* argv[]) {
             cfg["start_time_offset"] = 5.0f;
         }
         auto&    src = graph.emplaceBlock<gr::blocks::sdr::SoapySource<TRadio, kChannels>>(cfg);
-        RadioTap tap{.serial = serial};
+        RadioTap tap{.serial = serial, .src = std::addressof(src)};
         for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
             if (captureSec > 0.0) {
                 // Cap must clear the deliberate overshoot below: max_bytes_per_file ROLLS
@@ -239,6 +240,11 @@ int main(int argc, char* argv[]) {
             aggregate += mss;
             std::println("  {} ch{}  {:>8.4f} MS/s  ratio {:.4f}", taps[i].serial, ch, mss, mss * 1e6 / rateHz);
         }
+        // A ratio below 1 IS lost samples, and lost samples are overflow. Printing the
+        // ratio alone let "essentially full rate" stand in for "lossless", which are not
+        // the same claim; the counter says which one this run earned.
+        const auto& s = *taps[i].src;
+        std::println("      events  ovf {}  tmo {}  unf {}  cor {}  err {}", s._overflowCount.load(std::memory_order_relaxed), s._timeoutCount.load(std::memory_order_relaxed), s._underflowCount.load(std::memory_order_relaxed), s._corruptionCount.load(std::memory_order_relaxed), s._streamErrorCount.load(std::memory_order_relaxed));
     }
     const double target = rateHz * static_cast<double>(kChannels * taps.size()) / 1e6;
     std::println("");
