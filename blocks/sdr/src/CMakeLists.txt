@@ -89,3 +89,23 @@ add_custom_command(
     ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_rx_hold> -P
     ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
   COMMENT "womm: verifying womm_rx_hold links no transmit path")
+
+# womm: REVERSIBLE EXPERIMENT - is multi-process necessary? N radios x 2 channels
+# in ONE graph and ONE scheduler, against the 122.88 MS/s taken with N processes.
+# Delete this block and womm_mt_test.cpp to revert; nothing else depends on it.
+add_executable(womm_mt_test womm_mt_test.cpp)
+target_link_libraries(
+  womm_mt_test
+  PRIVATE gnuradio-options
+          gnuradio-core
+          gnuradio-blocklib-core
+          gr-sdr
+          gr-testing)
+
+add_custom_command(
+  TARGET womm_mt_test
+  POST_BUILD
+  COMMAND
+    ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_mt_test> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
+  COMMENT "womm: verifying womm_mt_test links no transmit path")
