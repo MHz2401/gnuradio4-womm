@@ -92,6 +92,7 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     std::atomic<bool>         _deviceTimeValid{false};
 
     std::vector<double> _reportedSampleRates{};
+    double              _reportedMasterClockRate = 0.0; // what the DEVICE chose, which with master_clock_rate=0 is not what we asked
     std::string         _reportedRefLocked{};
     std::string         _reportedClockSource{};
     std::string         _reportedTimeSource{};
@@ -770,6 +771,11 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
                 this->emitErrorMessage("applyClockConfig()", r.error());
             }
         }
+        // Read back AFTER the rate is applied, and read it even when we set it: with
+        // master_clock_rate = 0 the device picks, and Ettus's auto-selection maximises
+        // the clock rate to enable as many half-band filters as possible - so what it
+        // chose is a measurement, not an echo of a request.
+        _reportedMasterClockRate = _device.getMasterClockRate();
     }
 
     void applySampleRate() {
@@ -785,6 +791,10 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
         if (!detail::equalWithinOnePercent(actual, std::vector<double>(num_channels, static_cast<double>(sample_rate)))) {
             this->emitErrorMessage("applySampleRate()", std::format("mismatch: set {} vs actual {}", sample_rate, gr::join(actual, ", ")));
         }
+        // _reportedSampleRates was declared with the other device-reported values but
+        // never assigned, so it read as an empty measurement rather than a missing one.
+        // The requested rate is a request; this is what the device says it will do.
+        _reportedSampleRates = std::move(actual);
     }
 
     void applyAntenna() {

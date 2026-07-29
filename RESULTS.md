@@ -1964,3 +1964,118 @@ which exist only for UHD 4.8+; and our two local patches are `cxx17-for-uhd-4.10
 Nothing in `/opt/homebrew` or `/usr/local` can shadow the prefix's SoapySDR — there is no other copy
 on the machine — and `scripts/verify-vendor.sh` reports **all seven vendored trees reproduce from
 HEAD**. No action needed.
+
+### 10.10 ★ THE UNIFIED-INSTRUMENT PATH DOES NOT EXIST FOR B210-OVER-USB
+
+Owner, 2026-07-29: *"Radio people do not consider a bunch of un-synchronized radios to be unified in
+any way."* — and the observation that `multi_usrp` is UHD's **multi-device** abstraction, which we
+call four times, once per serial.
+
+The point is correct and worth stating plainly. "One instrument" in radio terms needs three things.
+We have two:
+
+| property | source | have it? |
+|---|---|---|
+| common frequency reference | Octoclock 10 MHz | ✔ |
+| common time reference | Octoclock PPS via `set_time_unknown_pps` | ✔ |
+| **sample-aligned streaming** | one streamer spanning all channels | **✘** |
+
+Ettus, "Multiple USRPs": with one streamer over several channels *"MIMO operations is automatically
+chosen. This means samples will be aligned between streams automatically."* That is the property we
+do not have — four `multi_usrp::make()` calls, four streamers, four independent read loops.
+
+**So: can the four B210s be one `multi_usrp`? No.** Tested at both layers:
+
+| layer | command | result |
+|---|---|---|
+| Soapy | `SoapySDRUtil --probe="driver=uhd,serial0=…,serial1=…,serial2=…,serial3=…"` | **one** mboard, `Channels: 2 Rx` |
+| UHD directly | `uhd_usrp_probe --args="serial0=…,serial1=…"` | **one** mboard, one "B-Series Device" |
+
+**UHD itself takes one mboard, so this is not a Soapy limitation.** The multi-device compound in the
+Ettus manual is for network devices (`addr0=…,addr1=…`, X3xx examples); the B200/B210 USB driver
+creates one device per USB connection, and the B210 has no MIMO cable.
+
+**Consequences, and they are clarifying rather than discouraging:**
+
+- **Sample-aligned multi-radio streaming is not available on this hardware.** It cannot be obtained
+  by configuring UHD differently.
+- **S2-1's barrier problem is therefore intrinsic**, not an artefact of our topology choice. It is
+  not dissolved by MT (§9.14) and it is not dissolved by a unified `multi_usrp` either.
+- **The shared-PPS-epoch plus per-device-timestamp approach is the only mechanism the hardware
+  offers**, which retroactively justifies §9.8's recovery of the discarded device timestamp: that
+  timestamp is not a nicety, it is the substitute for MIMO alignment.
+- **The correlated overflow is not explained by missing MIMO aggregation** — that path does not exist
+  to be missing.
+
+### 10.11 Master clock rate: auto-selection picks 16 MHz, which cannot carry full rate
+
+With `master_clock_rate = 0` the B210 selects **16.000000 MHz** — a round number, as the owner
+predicted. UHD says so itself: `[B200] Setting master clock rate selection to 'automatic'. Asking
+for clock rate 16.000000 MHz`.
+
+**But 16 MHz caps dual-channel at 8 MS/s per channel**, well below the 15.36 requested. The
+auto-selection happens at device creation, before a sample rate is requested, so it cannot know what
+is wanted. **The explicit `master_clock_rate = 30.72e6` is therefore load-bearing for reaching full
+rate, not an unexamined assumption.**
+
+Owner's recommended 15.00 MS/s at MCR 30.00 MHz was tested against the 15.36/30.72 baseline. Both
+achieve their requested rate exactly (device-reported 15.000000 and 15.360000). **Neither made the
+control clean**, and a single run each is not enough to rank them — recorded as tested, not settled.
+
+⚠ **A flaw in the first attempt at this test, recorded because it is the recurring family:** the
+first run compared auto-MCR against explicit-MCR *without checking the achieved sample rate*, so
+"auto" was silently running at a different rate than "explicit". Which is why `_reportedSampleRates`
+was fixed first — see below.
+
+### 10.12 `_reportedSampleRates` was declared and never assigned
+
+A field sitting with the other device-reported values, documented as "only these are measurements",
+which **no code ever wrote**. It read as an empty measurement rather than a missing one. Now
+populated in `applySampleRate()` from the readback that was already being performed and discarded.
+
+Also added: `_reportedMasterClockRate`, read after the clock config is applied, because with
+`master_clock_rate = 0` what the device chose is a measurement and not an echo of a request.
+
+### 10.13 SoapyUHD does no automatic clock sync — in any version
+
+Owner's hypothesis: that S1/S2's reports of slowness launching multiple SoapyUHD devices were the
+driver's automatic slow-but-reliable Ettus sync being mistaken for a fault.
+
+**The mechanism is not there.** In the vendored SoapyUHD (`2a5d381f`, the copy we build and load):
+
+- `make_uhd` (`:1145`) does an ABI check, registers a log handler, calls `multi_usrp::make(args)`.
+- The constructor (`:41`) sets only optional `rx_subdev`/`tx_subdev`.
+- Every clock and time call is a bare passthrough: `set_clock_source` (`:832`), `set_time_source`
+  (`:847`), `set_time_next_pps` / `set_time_unknown_pps` (`:873-874`).
+- `set_time_unknown_pps` — the multi-second call — is reachable **only** via
+  `setHardwareTime(t, "UNKNOWN_PPS")`, and in our tree the caller is our own `SoapySource::start()`,
+  gated on an external time source.
+- The changelog back to 2017 records no sync automation in any release; master adds only an X300
+  tree fix, a `getBandwidthRange` fix and a C++14 bump over 0.4.1.
+
+**But the conclusion may still hold by a different mechanism.** `multi_usrp::make()` performs full
+device bring-up — firmware load, CODEC init, register loopback tests, clock-rate selection — at
+~2.5 s per B210, and that is genuinely slow-but-reliable. It is plausible that this was read as a
+driver or latency fault. The slowness is real and expected; it is UHD device initialisation, not a
+Soapy default.
+
+### 10.14 `waitForLoLock()` is ours, and it is a no-op
+
+Added by us in `43d9724` (2026-07-27), rationale: *"applyFrequency() confirms the requested VALUE
+reads back, not that the synthesiser has settled. Streaming before LO lock yields garbage."* Sound
+reasoning, never tested.
+
+**Measured: every channel on every radio reads `lo_locked` true on the first poll.** Across all runs
+this session the recorded duration is 0.06–0.21 ms, which is sensor-read latency. By the time
+`waitForLoLock()` runs — after `applyFrequency`, `applyGain`, `applyBandwidth`, `applyDeviceSettings`
+and before `setupStream` — the synthesiser has always already locked.
+
+So it protects against nothing at that call site, while creating the impression of protection. The
+owner's flag was right: this is a case of building on an earlier, less-informed assumption.
+
+**Not removed**, because it is cheap and it is the correct guard *if* it were placed where tuning
+actually happens — which is the runtime retune path (`applyFrequency`), where it is absent and where
+nothing waits for lock at all. That asymmetry is the real finding.
+
+⚠ It is also **not recorded in `DRIFT.md`** as its own entry — only this session's modification of it
+is. A functional addition to upstream code that the drift register does not list.

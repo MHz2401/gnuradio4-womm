@@ -261,7 +261,7 @@ int main(int argc, char* argv[]) {
     // what is on the air. This is the settling number available without a transmitter.
     std::println("LO settle at boot (ms, per channel; -1 = channel exposes no lo_locked sensor):");
     for (const auto& tap : taps) {
-        std::println("  {} {:>10}  {}", tap.blockName, tap.serial.substr(0, 4) + "…", gr::join(tap.src->_loLockMs, ", "));
+        std::println("  {} {:>10}  lo_lock {}  |  MCR chosen {:.6f} MHz  rate {} MS/s", tap.blockName, tap.serial.substr(0, 4) + "…", gr::join(tap.src->_loLockMs, ", "), tap.src->_reportedMasterClockRate / 1e6, gr::join(std::views::transform(tap.src->_reportedSampleRates, [](double r) { return std::format("{:.6f}", r / 1e6); }), ", "));
     }
     std::println("");
 
