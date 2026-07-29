@@ -2306,3 +2306,84 @@ packages a known-good Soapy + UHD combination that would be the better basis. Th
 — 3.10 ships a much richer set of Ettus utilities via `apt install gnuradio`, and the absence of any
 UHD/HackRF mention in gr4's docs would be explained if maintainers assume everyone gets drivers from
 the 3.10 packaging. **Not checked. Open.**
+
+### 10.23 ★★★ GR 3.10 HAS THE START BARRIER BUILT IN. S2-1 IS A SOLVED PROBLEM UPSTREAM OF US.
+
+Owner's experiment, 2026-07-29: examine GR 3.10.9's flowgraph initialisation and how it would handle
+four Soapy radio blocks. Read-only shallow clone of `gnuradio/gnuradio` at **`v3.10.9.2`**
+(`c7c828a`), kept outside the repository.
+
+**The answer is unambiguous, and it is a standard framework feature.**
+
+`gnuradio-runtime/lib/scheduler_tpb.cc`, the thread-per-block scheduler constructor:
+
+```cpp
+thread::barrier_sptr start_sync =
+    std::make_shared<thread::barrier>(blocks.size() + 1);
+
+// Fire off a thead for each block
+for (size_t i = 0; i < blocks.size(); i++) {
+    d_threads.create_thread(thread::thread_body_wrapper<tpb_container>(
+        tpb_container(blocks[i], block_max_noutput_items, start_sync), ...));
+}
+start_sync->wait();
+```
+
+The full chain, verified end to end:
+
+| step | file:line | what happens |
+|---|---|---|
+| 1 | `scheduler_tpb.cc` | barrier sized `blocks.size() + 1`; **one thread per block**, all fired off together |
+| 2 | `tpb_thread_body.cc:26` | each thread's ctor init-list constructs `d_exec(block, …)` |
+| 3 | `block_executor.cc:251` | `d_block->start(); // enable any drivers, etc.` — **concurrently, one per thread** |
+| 4 | `tpb_thread_body.cc:66` | `start_sync->wait()` — every thread rendezvous |
+| 5 | — | barrier releases; **all work loops begin together** |
+
+And for a Soapy radio, `gr-soapy/lib/block_impl.cc:362-380`:
+
+```cpp
+bool block_impl::start() {
+    d_stream = d_device->setupStream(...);
+    d_mtu    = d_device->getStreamMTU(d_stream);
+    set_max_noutput_items(d_mtu);      // work invocations limited to one MTU
+    d_device->activateStream(d_stream);
+}
+```
+
+**So four Soapy radios in a GR 3.10 flowgraph: four threads, four concurrent `activateStream()`
+calls, then a barrier before any of them reads a sample.** Exactly what the owner described from
+operating experience, now confirmed in the source.
+
+### What this means for S2-1
+
+**`SPRINT.md` S2-1 — the "cross-process arming barrier", which this project has carried as one of
+the hardest open problems and "one of the core console tasks of the MCM" — is a built-in feature of
+the GR 3.10 scheduler that gnuradio4 dropped.** gr4's `Scheduler.hpp` contains **no barrier of any
+kind** (`grep -i barrier` returns nothing), and starts blocks by a serial `forEachBlock` walk
+(§10.20).
+
+Three honest qualifications, so this is not oversold:
+
+- **GR 3.10's barrier is in-process** — a `thread::barrier` across block threads, not across
+  processes. It solves S2-1 for the MT topology, not the MP one.
+- **It synchronises the start of work loops, not the hardware arming.** Hardware alignment still
+  comes from the PPS. What the barrier guarantees is that no block begins consuming until every
+  block has finished `start()` — which is precisely what stops radio 0 streaming while radio 3 is
+  still initialising.
+- **`set_max_noutput_items(d_mtu)` is a second thing 3.10 does that we do not**: work invocations are
+  capped at one device MTU, chosen from the device rather than configured by hand.
+
+### Consequences
+
+1. **S2-1 should be re-scoped.** It is not a novel problem to be invented; it is a feature to be
+   ported. The design is `thread::barrier(N+1)` + start-in-thread, and it is ~15 lines in 3.10.
+2. **`OPERATIONS.md` A-1 ("startup overflow is anticipated") is downgraded.** It is anticipated
+   *given gr4's serial start*, and that is a gr4 defect against its own predecessor rather than a
+   property of the hardware. Under the owner's model — overflow does not apply during startup at all
+   — A-1 should not exist.
+3. **The correlated residual (§10.4) is still unexplained**, and is NOT this: it persists long after
+   warm-up, and widening the arming window changes nothing (§10.21).
+
+**Clone is read-only, at a tag, outside the repository, and nothing from it has been copied in.**
+Licence caution for later: GR 3.10 is **GPL-3.0**, so its code cannot be lifted into this MIT tree —
+the design can be reimplemented, the source cannot be copied.
