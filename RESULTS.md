@@ -2387,3 +2387,63 @@ Three honest qualifications, so this is not oversold:
 **Clone is read-only, at a tag, outside the repository, and nothing from it has been copied in.**
 Licence caution for later: GR 3.10 is **GPL-3.0**, so its code cannot be lifted into this MIT tree —
 the design can be reimplemented, the source cannot be copied.
+
+### 10.24 How gr4 collects four streams — and the provenance of the polling
+
+Owner: *"if GR4.0 starts the radios in serial, what does it do to collect multiple streams of data?
+If your answer is 'polling', check for a provenance of that code to FAIR."*
+
+**Reading is NOT serial. Only `start()` is.** Each `SoapySource` launches its own IO thread:
+
+```cpp
+thread_pool::Manager::defaultIoPool()->execute([this]() { ioReadLoop(); });   // SoapySource.hpp:266
+```
+
+Four radios therefore get four concurrent reader threads doing blocking `readStream` calls. The
+serial `forEachBlock` walk (§10.20) delays *when each thread is created*, not how they run afterwards.
+
+**But `SoapySource::work()` never produces a sample.** It checks three liveness flags and returns
+`{requestedWork, 0UZ, work::Status::OK}` (`:278-291`). The scheduler calls it forever and it does
+nothing every time. The data path is entirely: IO thread → port buffer → scheduler workers move it
+downstream.
+
+**And the scheduler polls.** `poolWorker` (`Scheduler.hpp:704`) spins:
+
+| line | code |
+|---|---|
+| `:44` | `std::this_thread::sleep_for(…delay_ms…); // fallback spin sleep` |
+| `:783` | `std::this_thread::yield();` |
+| `:800`, `:803` | `std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));` |
+| `:846` | progress watchdog comparing `currentProgress == lastProgress` |
+
+### Provenance: FAIR, and in both trees
+
+The owner's suspicion is correct.
+
+| where | `poolWorker` present? | polling present? |
+|---|---|---|
+| `gnuradio/gnuradio4` main | **yes** (3) | yes — `// fallback spin sleep`, `yield()` |
+| `fair-acc/gnuradio4` main | **yes** (3) | yes — same lines |
+
+`git blame` on `Scheduler.hpp:704-830`, by author:
+
+| lines | author | affiliation |
+|---|---|---|
+| 58 | **Ralph J. Steinhagen** (3 commits, incl. `e608f23` "added optional scheduler blocking (#376)") | GSI/FAIR — the fair-acc/gnuradio4 lead |
+| 12 | `rstein` | same person |
+| 6 | **Alexander Krimm** | GSI/FAIR |
+| 7 | Sergio Martins | |
+| 18 | `mhertz2401` | ours |
+
+The **other** polling loop — the macOS thread-pool spin this project already replaced with a condvar
+(`DRIFT.md` Category F, 47× less CPU) — blames to the same two: **Ralph J. Steinhagen** and
+**Alexander Krimm**.
+
+**So the polling design is FAIR-authored throughout, and it is in `gnuradio/gnuradio4` because that
+tree derives from the FAIR work** — which is the same reason the two trees are in a licence dispute
+rather than a technical one (`HANDOFF.md` upstream landscape).
+
+**Contrast with GR 3.10 (§10.23), which is the point:** 3.10 gives each block a thread that *blocks*
+on its own work, with a barrier to align the start. gr4 gives blocks to a worker pool that *polls*
+for work, with no barrier at all. Two of this project's largest wins — the Category F condvar and the
+Category G ring-buffer fixes — were both repairs to that polling machinery.
