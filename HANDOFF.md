@@ -187,7 +187,7 @@ in `RESULTS.md` Phase 9, `DRIFT.md` Category H; milestones in `SPRINT.md`.
 |---|---|---|
 | C-1 | **Two-channel receive works** — first time in this project | Owner read the front-panel LEDs on all four units (A/B frontends, `TX/RX`) — out-of-band evidence no software defect can fake — agreeing with independent per-channel counters |
 | C-2 | **It had never worked, for two reasons, both fixed** | H-1: `start()` called `activate()` bare; UHD refuses "stream now" on a multi-channel streamer, reproduced **outside gr4**. H-2: `setHardwareTime` passed `nullptr` → `strlen(nullptr)` → SIGSEGV, unreachable until H-1 was fixed |
-| C-3 | **4 radios, 8 channels, 122.88 MS/s, ratio 1.0000** | zero overflows, 43 s; CPU ~53 % user / ~18 % sys / **~29 % idle** |
+| C-3 | **4 radios, 8 channels, 122.88 MS/s, ratio 1.0000** | 43 s; CPU ~53 % user / ~18 % sys / **~29 % idle**. ⚠ **"zero overflows" WITHDRAWN 2026-07-29** — no counter existed; it was inferred from the ratio. Measured with one, the same topology overflows 9–14 times per radio. The *rate* stands. `RESULTS.md` §10.1 |
 | C-4 | **A B2xx does 30.72 MS/s aggregate on two channels** (15.36 per channel) | UHD's own refusals; Nyquist relation to the sample clock, per owner |
 | C-5 | **All four radios share one PPS epoch** | worst offset **39.8 ms** against a one-second discriminator |
 | C-6 | **Content verified — transmitted comb on all 8 channels** | 13 pickets each, spacing 40001.3–40001.4 Hz vs 40000 transmitted, fit rms **3.2–3.5 Hz** |

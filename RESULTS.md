@@ -1759,3 +1759,116 @@ retained as the single-process streaming/throughput benchmark. Neither is deprec
 
 Depth 0 only, so §8.3's scheduler-contention concern is untested in this topology at full rate.
 One run per point. Startup overflows occur at every rate — survivable at 24 threads, fatal at 16.
+
+---
+
+## Phase 10 — S2-3: the criterion could not be evaluated, because nothing counted
+
+Session 2026-07-29. Sprint item S2-3, with the owner's steer that the §9.14 follow-ups are its
+first part rather than a separate item.
+
+### 10.1 ★ WITHDRAWN — C-3's "zero overflows" was never measured
+
+`HANDOFF.md` C-3 and §9.6/§9.10 all record "zero overflows" at full rate. **No counter existed.**
+`womm_rx_hold` — the harness that produced those runs — set `max_overflow_count = 0` ("never stop")
+and reported nothing. The claim was read off the sample ratio.
+
+Measured now, with a counter, in the same four-process topology (`WOMM_THREADS=6` each, external
+clock, ~70 s):
+
+| radio | overflows | timeouts | rate/channel |
+|---|---|---|---|
+| A | 14 | 4 | 15.35–15.36 MS/s |
+| B | 12 | 4 | 15.35–15.36 MS/s |
+| C | 12 | 4 | 15.35–15.36 MS/s |
+| D | 9 | 4 | 15.35–15.36 MS/s |
+
+**Multi-process at full rate overflows.** The rate is at nominal and the earlier ratio was right;
+"lossless" was an inference from it, and the inference was wrong.
+
+**A ratio near 1.0 and "no overflow" are not the same claim.** Both harnesses now report both.
+
+### 10.2 §9.14's 0.9948 is a favourable single draw, not a value
+
+Seven runs of `womm_mt_test`, 4 radios × 2 channels, depth 0, 24 threads, external clock:
+
+| | ratio |
+|---|---|
+| runs | 0.9891, 0.9901, 0.9929, 0.9931, 0.9938, 0.9942, 0.9966 |
+| **mean** | **0.9928** |
+| range | 0.9891–0.9966 |
+
+§9.14's single 0.9948 lies inside this range. Two consequences, and they point opposite ways:
+
+- **No regression from this session's instrumentation** — the added counters and device-time tags
+  cost nothing measurable. That was the first thing checked and it is why the repeats were run.
+- **§9.14's "within 0.5 %" was more precise than its evidence.** It compared one MT run against one
+  MP run. MT never reached 1.0000 in seven attempts.
+
+### 10.3 ⚠ OPEN CONTRADICTION — MT has FEWER overflows than MP, yet a lower ratio
+
+Same instrument, same session:
+
+| topology | overflows/radio | ratio |
+|---|---|---|
+| MP, 4 processes, 6 threads each, ~70 s | 9–14 | ~1.000 (15.35–15.36 MS/s per channel) |
+| MT, 1 process, 24 threads, ~50 s | 6–8 | 0.9896–0.9911 |
+
+**Device overflow cannot explain both.** If MT's ~1 % deficit were dropped samples, MT would show
+*more* overflow events than MP, not fewer. So either MT loses samples somewhere that is not the
+device, or the two ratios are not measuring the same thing.
+
+**Stated as unexplained rather than guessed at.** Candidate directions, none tested: the two
+harnesses compute the ratio over different windows (one 20 s window vs repeated 1 s windows, the
+latter displayed to 2 decimals and unable to resolve 0.999 from 1.000); or MT loses samples
+downstream of the source. This is the next thing to settle, and it bears directly on §9.14's
+headline.
+
+### 10.4 ★ THE S2-3 CONTROL FAILS — the baseline is not quiet at any rate tried
+
+`womm_ops null` runs the operations harness with **no operation injected**. It must report zero
+attributed events, or no operation result taken at that operating point means anything.
+
+| aggregate rate | per 4 s window, per radio |
+|---|---|
+| 122.88 MS/s | 0–18 overflows, bursty |
+| 61.44 MS/s | 1–2 overflows |
+| 61.44 MS/s, timing tags off | 1–2 overflows |
+
+**So the tier-1 criterion cannot yet be evaluated at full rate.** "No unanticipated overflow during
+operations" is unmeasurable while the background rate is larger than any operation's effect. Finding
+the rate at which the control is clean is now the precondition for the rest of S2-3.
+
+### The residual is perfectly correlated across four independent radios
+
+At 61.44 MS/s every radio reported **identical** counts in every window — 2/0/1, 2/0/1, 2/0/1,
+2/0/1. Four B210s on separate XHCI controllers do not agree by chance; this is one cause in the
+host stalling all four read loops together, not four independent device events.
+
+**Refuted, not assumed: periodic tag emission is not the cause.** `emit_timing_tags` and
+`emit_meta_info` run on the read loop and were the obvious suspect — `womm_mt_test` already disables
+them, commented "no tag cost". With both off the counts are unchanged (1/0/2 against 2/0/1).
+
+### 10.5 The boot LO measurement is a BOUND, not a settle time
+
+`waitForLoLock()` now retains its duration instead of discarding it on success. Measured per
+channel, all four radios: **0.06–0.17 ms**.
+
+**This is not "the LO settles in 0.1 ms".** The loop records ~0 when the sensor already reads
+`true` on the first poll, which is what happened on every channel — so the synthesiser had already
+locked before `waitForLoLock()` was reached, during the preceding device setup. The number bounds
+the settle time from above by everything that ran before the check; it does not resolve it.
+
+Runtime retune settling is a separate and currently unobservable quantity: `applyFrequency()`
+(`SoapySource.hpp:750`) never calls `waitForLoLock()`, and the harness cannot poll the sensor itself
+because the read loop is the only thread permitted to touch the device.
+
+### 10.6 Operational — consecutive runs need a settle gap
+
+Five back-to-back `womm_mt_test` invocations with no gap: the first produced no result at all. With
+a 15 s gap between runs, five of five succeeded. The devices need time to be released between
+processes.
+
+Recorded because the first attempt at the repeats **hid** this: it piped each run through
+`grep AGGREGATE`, so a failed run wrote nothing and looked the same as a run that had not finished.
+The same family as the retracted instruments — a measurement that cannot report its own failure.

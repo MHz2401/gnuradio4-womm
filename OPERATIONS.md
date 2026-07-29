@@ -133,6 +133,20 @@ initialising, so it overflows with nothing draining it. `RESULTS.md` §9.14 reco
 **Anticipated.** Excluded from measurement by the readiness gate plus warm-up window, not by fixing
 it. In a multi-process topology each process brings up its own radio and the effect does not arise.
 
+### A-3 · A correlated residual that is not startup, and is not yet explained
+
+**Condition:** every rate tried, in steady state, after warm-up.
+**Always or conditional:** **UNRESOLVED — this is the open item blocking S2-3.**
+**Evidence:** at 61.44 MS/s aggregate all four radios report *identical* counts in every window
+(2/0/1 on each). Four B210s on separate XHCI controllers do not agree by chance, so this is one
+cause in the host stalling all four read loops together. Magnitude scales with rate: 0–18 per 4 s
+window at 122.88 MS/s, 1–2 at 61.44.
+**Refuted so far:** periodic tag emission. `emit_timing_tags` and `emit_meta_info` run on the read
+loop and were the obvious suspect, but turning both off leaves the counts unchanged (1/0/2 against
+2/0/1). `WOMM_NOTAGS=1` reproduces this.
+**Not anticipated until explained.** Until it is, the control is not clean and no operation
+measurement taken above it is attributable. `RESULTS.md` §10.4.
+
 ### A-2 · A live retune blocks the read loop
 
 **Condition:** any `frequency` change while streaming.

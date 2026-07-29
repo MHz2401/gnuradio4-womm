@@ -422,3 +422,31 @@ licensing obstacle to being offered upstream.
 
 **Reverse:** `git revert` the Category H commit. H-2 must not be reverted while H-1 stands — that
 combination is the segfault.
+
+---
+
+## Category I — event instrumentation on the receive path (additive, 2026-07-29)
+
+`blocks/sdr/include/gnuradio-4.0/sdr/SoapySource.hpp`. Added while building the S2-3 instrument,
+because the tier-1 criterion is stated in terms of overflow and underflow and **only overflow was
+counted**. Purely additive: no existing behaviour changes, and every addition is independently
+removable.
+
+| # | change | why | removal cost |
+|---|---|---|---|
+| I-a | `_timeoutCount` | `SOAPY_SDR_TIMEOUT` was discarded by a bare `continue` at both read loops. On UHD this is `ERROR_CODE_TIMEOUT` — the receive-side starvation event, and the closest true analogue to underflow on RX | delete the field, its reset, and two `fetch_add` lines |
+| I-b | `_underflowCount` + `SOAPY_SDR_UNDERFLOW` case | Soapy defines underflow as a **write** condition (`Errors.h:65`) and SoapyUHD never returns it on RX, so this is defensive — another driver may. Without the case it falls to `default:`, which stops the graph on a condition never characterised | delete the case; behaviour reverts to stopping |
+| I-c | `_corruptionCount`, `_streamErrorCount` + tags before stopping | both were fatal and reported only through the error channel, so a consumer could not place the event in the sample stream. `SOAPY_SDR_STREAM_ERROR (-2)` is specifically `LATE_COMMAND` or `BROKEN_CHAIN` (`vendor/SoapyUHD/SoapyUHDDevice.cpp:323-324`); the message now names both | delete the counters and the two `emitEventTag` calls |
+| I-d | `emitOverflowTag()` → `emitEventTag(key)` carrying `device_time_ns` | host timestamps carry scheduling jitter far larger than the effect being attributed, so on a disciplined multi-radio set-up the device clock is the only one on which radios are comparable. `rx_overflow` is unchanged as a key and stays canonical (`Tag.hpp:206`) | revert to the two-branch literal form |
+| I-e | `waitForLoLock()` retains duration in `_loLockMs`; **per-channel deadline** | the duration was discarded on success and reported only on failure. ⚠ **This one is a behaviour change**: the deadline was previously computed once for the whole loop, so channel 1 got whatever channel 0 left and a slow channel 0 could time out a channel that had not yet been given a chance | restore the single shared `deadline`; drop `_loLockMs` and its tag |
+| I-f | `lo_lock_ms` in the timing tag meta-info | surfaces I-e downstream, alongside the existing `device_time_ns` | delete the three-line block |
+
+**Licence:** all six are ours, written here. No fair-acc provenance, so Category E does not apply.
+
+**What this does NOT change:** no counter alters control flow except I-b, which replaces a stop with
+a count. Overflow handling, the "keep reading rather than restart the stream" decision, and the
+`max_overflow_count` threshold are untouched.
+
+Harnesses that report the counters: `womm_ops` (new), `womm_mt_test`, `womm_rx_hold`. Before this,
+`womm_rx_hold` reported none — which is how "zero overflows" came to be attached to full-rate
+results that had never been counted (`RESULTS.md` §10.1).

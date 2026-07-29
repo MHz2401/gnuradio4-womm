@@ -187,8 +187,11 @@ int main(int argc, char* argv[]) {
             {"max_time_out_us", std::uint32_t{1000000}},
             {"max_overflow_count", gr::Size_t{0}}, // never stop on overflow: counting them IS the measurement
             {"max_chunk_size", std::uint32_t{512U << 4U}},
-            {"emit_timing_tags", true}, // carries lo_lock_ms and device_time_ns
-            {"emit_meta_info", true},
+            // Periodic tag emission runs on the read loop, so it is a candidate cause of
+            // overflow in its own right - womm_mt_test already disables it "no tag cost".
+            // Switchable so that can be tested rather than assumed.
+            {"emit_timing_tags", std::getenv("WOMM_NOTAGS") == nullptr},
+            {"emit_meta_info", std::getenv("WOMM_NOTAGS") == nullptr},
         };
         if (const char* env = std::getenv("WOMM_EXTCLK"); env && std::string_view(env) == "1") {
             cfg["clock_source"]      = std::string("external");

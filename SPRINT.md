@@ -105,7 +105,7 @@ that is never triggered is an entry nobody needed to write.
 |---|---|---|
 | S2-1 | **DEMOTED by RESULTS.md §9.14** — streaming does not need multi-process, so the barrier is the cost of a topology only *capture* still uses. Specify the guarantee, then implement to it. The *term* is now defined by the owner — `RESULTS.md` "FORWARD DEFINITIONS" (1) — and the current behaviour is documented. What is still missing is the **contract** | a written guarantee — the bound on the window between last arrival and subsequent action, failure modes, timeout behaviour — then an implementation meeting it, then PPS-edge agreement across ≥5 runs |
 | S2-2 | **Tag defaults.** `tag_interval` is sample-derived (§9.12); the open part is the *default* for a block that does not know its rate at construction | ~1 tag/s at any rate without the caller computing it, and a `qa_` test pinning the interval in samples |
-| S2-3 | **★ Operations under load** — the tier-1 criterion as a DIAGNOSTIC PROCEDURE, not an enumeration | a written procedure (below) plus a first pass applying it to retune, gain change and settings change on 4 radios × 2 channels at capacity |
+| S2-3 | **★ Operations under load** — the tier-1 criterion as a DIAGNOSTIC PROCEDURE, not an enumeration | a written procedure (below) plus a first pass applying it to retune, gain change and settings change on 4 radios × 2 channels at capacity. **2026-07-29: procedure written (`OPERATIONS.md`), instrument built (`womm_ops`), first pass BLOCKED — the null control fails at every rate tried, so no operation result is attributable yet. `RESULTS.md` §10.4** |
 | S2-4 | **Document parameter conventions per platform** — replaces the withdrawn gain-test item | gain, antenna and rate conventions recorded for B210 / RTL-SDR / HackRF, with ranges and the fact that **gain has no universal convention** stated plainly |
 | S2-5 | **Define "Usable UI"** (owner, D10 — now a tier-1 item) | a written definition. It is coined but undefined; per the standing jargon rule, **do not build against it until it is defined.** Separate discussion; the definition is the deliverable |
 
@@ -130,6 +130,14 @@ Deliberately short. "Why was the old ~44 MS/s figure what it was" is **not** on 
 authoritative-sources rule it is a prior-session timing statement, so it is neither evidence nor a
 question. It was replaced, not explained, and that is sufficient.
 
+- **★ What stalls all four read loops together?** (S2-3, blocking) At 61.44 MS/s every radio reports
+  *identical* overflow counts in every window. Four B210s on separate XHCI controllers do not agree
+  by chance, so this is one host-side cause, not four device events. Periodic tag emission is
+  **refuted**. Until this is explained the S2-3 control is not clean and no operation measurement is
+  attributable. `RESULTS.md` §10.4
+- **Why does MT show FEWER overflows than MP but a lower sample ratio?** (`RESULTS.md` §10.3) Device
+  overflow cannot explain both. Bears directly on §9.14's headline, which compared the two on ratio
+  alone.
 - Is the 39.8 ms epoch agreement stable across launch timings, or an artefact of this stagger? (S2-1)
 
 **Why S2-1 is hard, and worth the sprint slot (owner, 2026-07-28):** the cross-process start barrier
