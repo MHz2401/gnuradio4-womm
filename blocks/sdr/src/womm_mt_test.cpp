@@ -135,6 +135,11 @@ int main(int argc, char* argv[]) {
             {"rx_gains", std::vector<double>(kChannels, envOr("WOMM_GAIN", kRxGainDb))},
             {"rx_bandwidths", std::vector<double>(kChannels, rateHz)},
             {"rx_antennae", std::vector<std::string>(kChannels, antenna)},
+            // NOT held constant against womm_rx_hold until now: that harness sets
+            // num_recv_frames=1024 and this one set nothing, so the MT-vs-MP comparison
+            // in RESULTS.md 9.14 differed by USB transfer-buffer depth as well as by
+            // topology. Default matches the MP harness; empty reproduces the old runs.
+            {"stream_args", std::getenv("WOMM_STREAM_ARGS") ? std::string(std::getenv("WOMM_STREAM_ARGS")) : std::string("num_recv_frames=1024")},
             {"max_time_out_us", std::uint32_t{1000000}},
             {"max_overflow_count", gr::Size_t{0}},
             {"max_chunk_size", chunkSize},

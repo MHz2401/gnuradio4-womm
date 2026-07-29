@@ -144,8 +144,23 @@ window at 122.88 MS/s, 1–2 at 61.44.
 **Refuted so far:** periodic tag emission. `emit_timing_tags` and `emit_meta_info` run on the read
 loop and were the obvious suspect, but turning both off leaves the counts unchanged (1/0/2 against
 2/0/1). `WOMM_NOTAGS=1` reproduces this.
+**Largely mitigated, cause unchanged:** `num_recv_frames=1024` cuts the magnitude by an order of
+magnitude at full rate (0–18 per window down to 0–2) — but **all four radios still report identical
+counts**. The size of the effect moved; the correlation did not. `RESULTS.md` §10.7.
 **Not anticipated until explained.** Until it is, the control is not clean and no operation
 measurement taken above it is attributable. `RESULTS.md` §10.4.
+
+### A-4 · USB transfer-buffer depth left at the UHD default
+
+**Condition:** any harness that does not set `stream_args`.
+**Always or conditional:** always, and the effect grows with rate.
+**Evidence:** Ettus B200 "Known issues" states plainly that the default streaming settings are not
+optimal for all use cases and recommends adjusting `recv_frame_size`. Measured here at 122.88 MS/s,
+setting `num_recv_frames=1024` reduced overflow from 0–18 per 4 s window to 0–2. `womm_rx_hold` had
+always set it; the MT harnesses never had, which also confounded §9.14's MT-vs-MP comparison.
+**Anticipated.** Both harnesses now default to `num_recv_frames=1024`. Override with
+`WOMM_STREAM_ARGS`. Note `num_recv_frames` (frame count) and `recv_frame_size` (bytes per frame) are
+different knobs — the second is the one Ettus names, and it had never been set here at all.
 
 ### A-2 · A live retune blocks the read loop
 

@@ -1872,3 +1872,95 @@ processes.
 Recorded because the first attempt at the repeats **hid** this: it piped each run through
 `grep AGGREGATE`, so a failed run wrote nothing and looked the same as a run that had not finished.
 The same family as the retracted instruments — a measurement that cannot report its own failure.
+
+### 10.7 ★ THE MT-vs-MP COMPARISON WAS CONFOUNDED — stream args were never held constant
+
+Owner's review, 2026-07-29, pointed at the B200 "Known issues" section. Checking it found a
+configuration difference that §9.14 had claimed did not exist.
+
+> **Ettus, B200 manual, "Known issues":** "The default streaming settings do not work optimally for
+> all use cases. If there are issues with performance or stability, it can help to modify the
+> `recv_frame_size` values, e.g., by setting `recv_frame_size=1024` as part of the device args."
+
+| harness | topology | `stream_args` |
+|---|---|---|
+| `womm_rx_hold` | **MP** | `num_recv_frames=1024` |
+| `womm_mt_test` | **MT** | *(none — UHD defaults)* |
+| `womm_bmax`, `womm_ops` | MT | *(none — UHD defaults)* |
+
+**§9.14 said "everything held at the working configuration; only the topology changed". It was
+not.** The MT harness ran with UHD's default USB transfer-buffer depth while the MP harness ran with
+1024. `num_recv_frames` (frame **count**) and `recv_frame_size` (**bytes** per frame) are different
+knobs, and the one Ettus documents as the remedy — `recv_frame_size` — had never been set here at all.
+
+**Effect on `womm_ops` at full rate, per 4 s window, per radio:**
+
+| `stream_args` | overflows |
+|---|---|
+| *(none)* | 0–18 |
+| `num_recv_frames=1024` | **0–2** |
+| `num_recv_frames=1024,recv_frame_size=1024` | 0–1 |
+| `recv_frame_size=1024` | 0–2 |
+
+**An order of magnitude, from one device arg.** Both harnesses now default to
+`num_recv_frames=1024`, overridable by `WOMM_STREAM_ARGS`.
+
+### But it does NOT explain the MT ratio deficit, and §10.3 still stands
+
+`womm_mt_test` with the arg matched to the MP harness, three runs: **0.9946, 0.9975, 0.9892**
+(mean 0.9938) against the previous seven runs' mean of 0.9928, range 0.9891–0.9966. **Overlapping
+ranges — no clear effect on the ratio.**
+
+So the stream-args confound is real and worth fixing, but the thing it fixes is the *overflow rate
+in `womm_ops`*, not MT's ~0.7 % sample deficit. Those are two different problems, and conflating
+them would repeat exactly the error §9.14 made.
+
+### And the control is still not clean
+
+At full rate with `num_recv_frames=1024` the null control reports **1 overflow per window** rather
+than up to 18 — and **all four radios still report identical counts** (1/1/0 on each). The magnitude
+fell by an order of magnitude; the correlation did not change at all. Whatever stalls all four read
+loops together is still there, just smaller.
+
+### 10.8 Master clock rate — we run at the documented dual-channel ceiling
+
+> **Ettus, B200 manual, "Changing the Master Clock Rate":** "The clock rate can be set to any value
+> between 5 MHz and 61.44 MHz (or 30.72 MHz for dual-channel mode). Note that rates above 56 MHz are
+> possible, but not recommended."
+
+We use `master_clock_rate = 30.72e6` with two channels — **exactly the documented dual-channel
+maximum** — and a per-channel rate of 15.36 MS/s, i.e. **decimation of 2, the minimum**.
+
+The "not recommended above 56 MHz" caveat applies to single-channel operation and does not bite us.
+But the shape of the guidance does: Ettus treats the top of the range as marginal, and
+
+> **"Automatic Clock Rate Setting":** "The auto clock rate selection attempts to use the largest
+> possible clock rate as to enable as many half-band filters as possible."
+
+— so the driver's own auto-selection exists to *maximise* available half-band filtering, and pinning
+MCR to 30.72 with decimation 2 gives it the fewest stages to work with. Every "at capacity" run this
+project has recorded has used the most marginal configuration the part offers.
+
+**Not yet tested: lowering the MCR itself.** §10.4's half-rate run lowered `WOMM_RATE` to 7.68 MS/s
+but left `WOMM_MCR` at 30.72e6, so it changed decimation, not the clock rate. Lowering MCR is a
+distinct experiment and is the outstanding one.
+
+### 10.9 Driver provenance — checked, and correct
+
+Owner asked whether an earlier session left us on a Soapy that gr4 does not use, possibly less
+feature-rich. Checked:
+
+| | version | source |
+|---|---|---|
+| SoapySDR | `v0.8.1-g17e590ba`, ABI `v0.8-3` | vendored master (2026-01-02), built into the prefix |
+| SoapyUHD | vendored master `2a5d381f` (2025-10-05) | **reports "0.4.1"** — upstream never tagged a newer release |
+| UHD | 4.10.0 | brew, by decision I-3 |
+
+**The "0.4.1" is a stale version string in master, not an old driver.** Evidence it is master: the
+vendored source carries `post_input_action`/`post_output_action` (`UHDSoapyDevice.cpp:711,863`),
+which exist only for UHD 4.8+; and our two local patches are `cxx17-for-uhd-4.10` and
+`boost-190-lexical-cast`, neither of which a genuine 0.4.1 would need or build with.
+
+Nothing in `/opt/homebrew` or `/usr/local` can shadow the prefix's SoapySDR — there is no other copy
+on the machine — and `scripts/verify-vendor.sh` reports **all seven vendored trees reproduce from
+HEAD**. No action needed.

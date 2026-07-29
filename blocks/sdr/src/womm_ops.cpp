@@ -184,6 +184,16 @@ int main(int argc, char* argv[]) {
             {"rx_gains", std::vector<double>(kChannels, envOr("WOMM_GAIN", kRxGainDb))},
             {"rx_bandwidths", std::vector<double>(kChannels, rateHz)},
             {"rx_antennae", std::vector<std::string>(kChannels, antenna)},
+            // Ettus, B200 "Known issues": "The default streaming settings do not work
+            // optimally for all use cases. If there are issues with performance or
+            // stability, it can help to modify the recv_frame_size values, e.g., by
+            // setting recv_frame_size=1024 as part of the device args."
+            //
+            // recv_frame_size (BYTES PER FRAME) and num_recv_frames (FRAME COUNT) are
+            // different knobs. womm_rx_hold sets only the latter and the MT harnesses set
+            // neither, so the two topologies were never compared on equal stream args -
+            // and the documented remedy has never been applied here at all.
+            {"stream_args", std::getenv("WOMM_STREAM_ARGS") ? std::string(std::getenv("WOMM_STREAM_ARGS")) : std::string("num_recv_frames=1024")},
             {"max_time_out_us", std::uint32_t{1000000}},
             {"max_overflow_count", gr::Size_t{0}}, // never stop on overflow: counting them IS the measurement
             {"max_chunk_size", std::uint32_t{512U << 4U}},
