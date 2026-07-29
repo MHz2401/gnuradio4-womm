@@ -1703,3 +1703,59 @@ What it currently does: each process touches `${WOMM_BARRIER_DIR}/ready.<pid>`, 
 window between the last arrival and any subsequent action, which is the only property that would
 make PPS-edge agreement structural rather than observed. Specifying it is sprint-2 work, not a
 one-line reuse.
+
+### 9.14 ★ MULTI-PROCESS IS NOT REQUIRED — and why this was the right time to find out
+
+The tier-1 goal is full performance before anything else, so re-checking the topology **as soon as
+full performance existed** is protocol, not a detour. It could not have been asked earlier: until
+2026-07-27 there was no full-performance configuration to hold constant. The one thing hindsight
+would change is that it belonged in the same breath as the D10 "Usable UI" decision, since both are
+tier-1 and the topology determines how hard the UI integration is.
+
+Harness: `blocks/sdr/src/womm_mt_test.cpp` — N radios × 2 channels, depth 0, **one graph, one
+scheduler, one process**. Everything held at the working configuration; only topology varies.
+
+| aggregate target | pool threads | result |
+|---|---|---|
+| 30.72 MS/s | 16 | ratio **1.0000** |
+| 61.44 MS/s | 16 | ratio **1.0000** |
+| 122.88 MS/s | 16 | **FAILED** — overflows, then `stream error: -2` |
+| **122.88 MS/s** | **24** | **122.24 MS/s, ratio 0.9948** |
+
+**One process reaches within 0.5 % of four processes.** The intermediate failure was **my own pool
+under-sizing**: the multi-process run used 6 threads × 4 processes = 24 total, so 16 in one process
+was never the same experiment.
+
+### What was mis-attributed, and how
+
+Every figure that made multi-process look necessary came from `womm_bmax` — itself a **single-process**
+harness — and every one of those runs was **single-channel at DSP depth 8**, crippled by the bug that
+made all pre-2026-07-27 measurements half-blind. §8.3 then profiled scheduler mutex contention among
+workers sharing one graph, which *shaped* the conclusion toward "radios in one scheduler contend",
+even though §8.3's own finding was that the contention was a symptom.
+
+**The topology was never the problem. It was convicted on evidence about something else.**
+
+### ⚠ Split verdict: MT for streaming, MP still earns its keep for capture
+
+MT throughput is proven. **MT capture is not.** In one process the radios start staggered, so file
+lengths diverge badly — 104 608 samples on one radio against 31 904 on another in the same 0.2 s
+request — while the fastest hits its byte cap and rolls over. Independent per-radio files are
+something multi-process gets for free.
+
+So `scripts/womm-scan.sh` **stays on the multi-process path for capture**, and `womm_mt_test` is
+retained as the single-process streaming/throughput benchmark. Neither is deprecated.
+
+### Consequences
+
+- **S2-1 is largely dissolved, not solved.** The cross-process start barrier is the cost of a
+  topology that streaming does not need.
+- **Pool sizing is a cliff, not a gradient.** 16 threads silently fails at full rate where 24 works,
+  with no warning. This is now the most dangerous undocumented parameter in the project.
+- **Fault isolation is genuinely lost in MT.** One stream error takes the whole graph down — exactly
+  what happened at 16 threads. In four processes, three would have survived.
+
+### Not settled
+
+Depth 0 only, so §8.3's scheduler-contention concern is untested in this topology at full rate.
+One run per point. Startup overflows occur at every rate — survivable at 24 threads, fatal at 16.

@@ -37,6 +37,9 @@
 #include <gnuradio-4.0/Scheduler.hpp>
 #include <gnuradio-4.0/thread/thread_pool.hpp>
 
+#include <filesystem>
+
+#include <gnuradio-4.0/fileio/BasicFileIo.hpp>
 #include <gnuradio-4.0/sdr/SoapySource.hpp>
 #include <gnuradio-4.0/testing/NullSources.hpp>
 
@@ -65,8 +68,11 @@ void mustConnect(auto&& r, std::string_view what) {
 }
 
 struct RadioTap {
-    std::string                                              serial;
-    std::array<gr::testing::CountingSink<TRadio>*, kChannels> sinks{};
+    std::string                                                       serial;
+    std::array<gr::testing::CountingSink<TRadio>*, kChannels>         sinks{};
+    std::array<gr::blocks::fileio::BasicFileSink<TRadio>*, kChannels> files{};
+
+    gr::Size_t count(std::size_t ch) const { return files[ch] ? static_cast<gr::Size_t>(files[ch]->_totalBytesWritten / sizeof(TRadio)) : sinks[ch]->count.value; }
 };
 
 int main(int argc, char* argv[]) {
@@ -100,6 +106,21 @@ int main(int argc, char* argv[]) {
         Manager::instance().replacePool(std::string(kDefaultCpuPoolId), std::make_shared<ThreadPoolWrapper>(std::make_unique<BasicThreadPool>(std::string(kDefaultCpuPoolId), TaskType::CPU_BOUND, n, n), "CPU"));
     }
 
+    const double      captureSec = envOr("WOMM_CAPTURE_SEC", 0.0);
+    const std::string captureDir = std::getenv("WOMM_CAPTURE_DIR") ? std::getenv("WOMM_CAPTURE_DIR") : "data";
+    const char*       sfx        = std::getenv("WOMM_CAPTURE_SUFFIX");
+
+    // A capture ends on a chunk boundary, so the chunk must fit inside the request.
+    std::uint32_t chunkSize = 512U << 4U;
+    if (captureSec > 0.0) {
+        const auto want = static_cast<std::uint64_t>(rateHz * captureSec);
+        while (chunkSize > 512U && static_cast<std::uint64_t>(chunkSize) > want) {
+            chunkSize >>= 1U;
+        }
+        std::filesystem::create_directories(captureDir);
+    }
+    const auto targetSamples = static_cast<std::uint64_t>(rateHz * captureSec);
+
     gr::Graph             graph;
     std::vector<RadioTap> taps;
     for (const auto& serial : serials) {
@@ -115,6 +136,7 @@ int main(int argc, char* argv[]) {
             {"rx_antennae", std::vector<std::string>(kChannels, antenna)},
             {"max_time_out_us", std::uint32_t{1000000}},
             {"max_overflow_count", gr::Size_t{0}},
+            {"max_chunk_size", chunkSize},
             {"emit_timing_tags", false}, // depth 0 and throughput only: no tag cost
             {"emit_meta_info", false},
         };
@@ -126,9 +148,19 @@ int main(int argc, char* argv[]) {
         auto&    src = graph.emplaceBlock<gr::blocks::sdr::SoapySource<TRadio, kChannels>>(cfg);
         RadioTap tap{.serial = serial};
         for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
-            auto& sink = graph.emplaceBlock<gr::testing::CountingSink<TRadio>>({{"n_samples_max", gr::Size_t{0}}});
-            mustConnect(graph.connect(src, std::format("out#{}", ch), sink, "in"s), std::format("{} out#{}", serial, ch));
-            tap.sinks[ch] = std::addressof(sink);
+            if (captureSec > 0.0) {
+                // Cap must clear the deliberate overshoot below: max_bytes_per_file ROLLS
+                // THE FILE OVER rather than stopping, and in overwrite mode that restarts
+                // the same filename from zero.
+                const std::string path = std::format("{}/capture_{}_ch{}{}.bin", captureDir, serial, ch, sfx ? sfx : "");
+                auto&             sink = graph.emplaceBlock<gr::blocks::fileio::BasicFileSink<TRadio>>({{"file_name", path}, {"max_bytes_per_file", static_cast<gr::Size_t>((targetSamples + 8UL * chunkSize) * sizeof(TRadio))}});
+                mustConnect(graph.connect(src, std::format("out#{}", ch), sink, "in"s), std::format("{} out#{} -> file", serial, ch));
+                tap.files[ch] = std::addressof(sink);
+            } else {
+                auto& sink = graph.emplaceBlock<gr::testing::CountingSink<TRadio>>({{"n_samples_max", gr::Size_t{0}}});
+                mustConnect(graph.connect(src, std::format("out#{}", ch), sink, "in"s), std::format("{} out#{}", serial, ch));
+                tap.sinks[ch] = std::addressof(sink);
+            }
         }
         taps.push_back(tap);
     }
@@ -152,7 +184,14 @@ int main(int argc, char* argv[]) {
     // at ~2.5 s each, and with an external time source each also blocks ~2 s in
     // set_time_unknown_pps - so a fixed sleep would measure start-up, not rate.
     const auto ready = [&] {
-        return std::ranges::all_of(taps, [](const RadioTap& t) { return std::ranges::all_of(t.sinks, [](auto* s) { return s->count.value > 0U; }); });
+        return std::ranges::all_of(taps, [](const RadioTap& t) {
+            for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
+                if (t.count(ch) == 0U) {
+                    return false;
+                }
+            }
+            return true;
+        });
     };
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
     while (!ready() && std::chrono::steady_clock::now() < deadline) {
@@ -166,18 +205,36 @@ int main(int argc, char* argv[]) {
     std::vector<std::array<gr::Size_t, kChannels>> start(taps.size());
     for (std::size_t i = 0UZ; i < taps.size(); ++i) {
         for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
-            start[i][ch] = taps[i].sinks[ch]->count.value;
+            start[i][ch] = taps[i].count(ch);
         }
     }
     const auto t0 = std::chrono::steady_clock::now();
-    std::this_thread::sleep_for(std::chrono::duration<double>(kMeasureSec));
+    if (captureSec > 0.0) {
+        // Duration by SAMPLE COUNT, overshooting deliberately because stopping the graph
+        // truncates the tail; trimmed to exact length after the stop.
+        const auto by = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        while (std::chrono::steady_clock::now() < by) {
+            bool done = true;
+            for (const auto& t : taps) {
+                for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
+                    done = done && static_cast<std::uint64_t>(t.count(ch)) >= targetSamples + 4UL * chunkSize;
+                }
+            }
+            if (done) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    } else {
+        std::this_thread::sleep_for(std::chrono::duration<double>(kMeasureSec));
+    }
     const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
     double aggregate = 0.0;
     std::println("");
     for (std::size_t i = 0UZ; i < taps.size(); ++i) {
         for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
-            const auto   delta = static_cast<gr::Size_t>(taps[i].sinks[ch]->count.value - start[i][ch]);
+            const auto   delta = static_cast<gr::Size_t>(taps[i].count(ch) - start[i][ch]);
             const double mss   = static_cast<double>(delta) / elapsed / 1e6;
             aggregate += mss;
             std::println("  {} ch{}  {:>8.4f} MS/s  ratio {:.4f}", taps[i].serial, ch, mss, mss * 1e6 / rateHz);
@@ -186,6 +243,23 @@ int main(int argc, char* argv[]) {
     const double target = rateHz * static_cast<double>(kChannels * taps.size()) / 1e6;
     std::println("");
     std::println("AGGREGATE {:.2f} MS/s of {:.2f} target   ratio {:.4f}", aggregate, target, aggregate / target);
+
+    if (captureSec > 0.0) {
+        const auto wantBytes = static_cast<std::uintmax_t>(targetSamples * sizeof(TRadio));
+        for (const auto& t : taps) {
+            for (std::size_t ch = 0UZ; ch < kChannels; ++ch) {
+                const std::string path = std::format("{}/capture_{}_ch{}{}.bin", captureDir, t.serial, ch, sfx ? sfx : "");
+                std::error_code   ec;
+                const auto        have = std::filesystem::file_size(path, ec);
+                if (ec || have < wantBytes) {
+                    std::println(stderr, "SHORT CAPTURE {}: {} of {} samples", path, ec ? 0UL : have / sizeof(TRadio), targetSamples);
+                    continue;
+                }
+                std::filesystem::resize_file(path, wantBytes, ec);
+            }
+        }
+        std::println("captured {} samples/channel to {}", targetSamples, captureDir);
+    }
 
     sched.requestStop();
     const auto stopBy = std::chrono::steady_clock::now() + std::chrono::seconds(30);

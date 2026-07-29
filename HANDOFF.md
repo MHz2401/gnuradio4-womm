@@ -317,3 +317,30 @@ construction — `assert_no_tx.cmake` asserts on the **linked binary** that no t
 present, because a comment cannot make that guarantee.
 
 Still to write: `scripts/build.sh`, `scripts/verify.sh`, `PORTABILITY.md`.
+
+---
+
+## ⚠ ALWAYS REVIEW PAST DECISIONS AND ATTRIBUTIONS
+
+**This is the most transferable lesson the project has produced.** A conclusion is only as good as
+the configuration it was measured in, and configurations change underneath conclusions.
+
+**The worked example (`RESULTS.md` §9.14).** Multi-process was treated as necessary for most of this
+project. It was not. Every figure supporting it came from runs that were **single-channel at DSP
+depth 8** — crippled by a bug nobody knew about — and the explanation offered at the time implicated
+the shared scheduler. When the bug was fixed and full performance existed, one process reached
+**within 0.5 %** of four. The topology had been convicted on evidence about something else entirely.
+
+The same shape appears three more times in this project: the "~44 MS/s ingest cap", the retracted
+count-drift instrument, and a comb detector that reported a signal on silence. In each case a
+plausible explanation attached itself to an observation and then survived unexamined.
+
+**So, on entering a session:**
+
+- **Re-test the load-bearing conclusions**, especially ones inherited from a prior session. Cheap to
+  re-run, expensive to build on.
+- **When a bug is fixed, ask what that bug was previously blamed for.** Fixing the single-channel
+  defect invalidated far more than the figures it directly touched.
+- **Ask who measured a claim, in what configuration, and whether that configuration still exists.**
+- Under the authoritative-sources rule, **a prior-session figure is not evidence** — but it may still
+  be silently shaping a decision. Those are the ones to hunt.

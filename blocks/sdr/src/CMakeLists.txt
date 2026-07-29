@@ -100,6 +100,7 @@ target_link_libraries(
           gnuradio-core
           gnuradio-blocklib-core
           gr-sdr
+          gr-fileio
           gr-testing)
 
 add_custom_command(
