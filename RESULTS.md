@@ -1995,6 +1995,12 @@ do not have — four `multi_usrp::make()` calls, four streamers, four independen
 Ettus manual is for network devices (`addr0=…,addr1=…`, X3xx examples); the B200/B210 USB driver
 creates one device per USB connection, and the B210 has no MIMO cable.
 
+**Owner, confirming and sharpening this:** multi-device aggregation applies only to the **N- and
+X-series RFNoC** devices. Note the distinction, which is easy to garble — `multi_usrp::make()` is
+the ordinary UHD entry point and *is* used for the B210 (SoapyUHD calls it for every device, see
+§10.13); what is N/X-series-only is putting **several motherboards inside one** `multi_usrp`. The
+measurement above and this statement agree, arrived at independently.
+
 **Consequences, and they are clarifying rather than discouraging:**
 
 - **Sample-aligned multi-radio streaming is not available on this hardware.** It cannot be obtained
