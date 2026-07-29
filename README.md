@@ -11,7 +11,11 @@
 
 <!-- ALL-CONTRIBUTORS-BADGE:END -->
 
-# GNU Radio 4.0
+# GNU Radio 4.0: Works on My Mac Edition
+
+_not necessarily on your Mac_
+
+- **NOTE TO SELF:** remove this 3-line header mod
 
 > [!IMPORTANT]
 > GNU Radio 4.0 (GR4) is currently in a maturing beta state as it approaches its
