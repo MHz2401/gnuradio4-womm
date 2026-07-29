@@ -2085,3 +2085,140 @@ nothing waits for lock at all. That asymmetry is the real finding.
 
 ⚠ It is also **not recorded in `DRIFT.md`** as its own entry — only this session's modification of it
 is. A functional addition to upstream code that the drift register does not list.
+
+### 10.15 ⚠ CORRECTION TO §10.7 — `num_recv_frames` in stream args does NOTHING
+
+**My §10.7 claim of "an order of magnitude from one device arg" was wrong, and the error was n=1.**
+Owner's caution — *"there are variations between names used in the soapy driver and ettus… 'the
+place to enter them' are a source of confusion"* — is exactly what this was.
+
+Total overflow across all windows and radios, full rate, one run each:
+
+| where `num_recv_frames=1024` was put | total overflow |
+|---|---|
+| nowhere (baseline) | 20 |
+| **stream args** — where every harness has always put it | **20** |
+| **device args** — where Ettus says to put it | **7** |
+| both | **3** |
+
+**Stream args are inert: identical to not setting it at all.** The improvement reported in §10.7 was
+run-to-run variance in a single measurement, and it was reported before repeats — the same mistake
+§10.2 had just finished documenting in someone else's work.
+
+**Two consequences:**
+
+- **The `womm_rx_hold` / `womm_mt_test` stream-args difference is real but inert.** The harnesses did
+  differ, so §9.14's "only the topology changed" is still not true — but the difference had no
+  effect, so it does not explain anything either. The confound stands; the mechanism does not.
+- **`recv_frame_size` and `num_recv_frames` in *device* args have never been set by any harness**,
+  which is the one place they work. That is now the most promising untried lever.
+
+Repeats of the device-args configuration are in progress; the table above is one run per cell and is
+**not** a settled result. Recorded this way deliberately.
+
+**And it is not a USB bandwidth story.** Owner: *"We have firmly established that no issues with
+radios and bandwidth are related to USB."* Consistent — `num_recv_frames` is host-side buffer
+*depth*, so it buys tolerance for host scheduling stalls rather than transport throughput. That fits
+the correlated-stall observation in §10.4 rather than contradicting it.
+
+### 10.16 ⚠ "~2.5 s per B210 bring-up" is a prior-session figure, and it is wrong
+
+Caught by the owner quoting it back. `HANDOFF.md` carries "Device init (~2.5 s per B210)" and the
+harness comments repeat it ("B210 bring-up is ~2.5 s"), and I restated it as established fact. Under
+the authoritative-sources rule a prior-session timing statement **is not evidence**, and this one had
+never been re-measured.
+
+**Measured, 2026-07-29, `uhd_usrp_probe --args=serial=…`, wall clock:**
+
+| radio | real |
+|---|---|
+| A | **0.93 s** |
+| B | **0.52 s** |
+
+`uhd_usrp_probe` includes `multi_usrp::make()` *plus* the full property-tree walk and printing, so
+device bring-up alone is **under a second** — three to five times faster than the inherited figure.
+
+**Probable reconciliation:** with an external time source our own `start()` calls
+`set_time_unknown_pps()`, which blocks up to ~2 s by construction waiting for a PPS transition — and
+that is documented in our own code comment. The "~2.5 s device init" most likely conflated UHD
+device initialisation with **our** PPS wait. Stated as the likely explanation, not a measured one:
+the 0.5–0.9 s figures above were taken without an external clock.
+
+**This also weakens §10.13's "the slowness is real".** Half a second is not obviously slow enough to
+be mistaken for a driver fault. What *is* slow is the PPS wait, which is ours and deliberate.
+
+**Consequence:** readiness timeouts and warm-up windows across the harnesses were sized against a
+number that was too large by 3–5×. Harmless — they are generous, not tight — but they are not
+evidence of anything about the hardware.
+
+### 10.17 STANDING RULE — do not run MIMO
+
+Owner, 2026-07-29: **MIMO is implicitly a transmit mode.** It is therefore covered by the standing
+RF-transmission rule in `HANDOFF.md`, and no test in this project may enable it.
+
+This matters because §10.10 discusses MIMO *streamer alignment* — the property whereby one streamer
+spanning several channels aligns their samples. **That discussion is about what the hardware cannot
+give us, not a proposal to enable anything**, and the point is moot regardless: multi-mboard
+aggregation is unavailable for B210-over-USB, so the configuration cannot be reached even by
+accident.
+
+All harnesses remain RX-only by construction, and `assert_no_tx.cmake` asserts on the linked binary
+that no transmit symbol is present.
+
+### 10.18 ⚠ CORRECTION TO §10.16 — my own bring-up figure used the wrong instrument
+
+§10.16 reported 0.52–0.93 s from `uhd_usrp_probe` and called the inherited "~2.5 s" wrong by 3–5×.
+**The instrument was wrong.** Owner: *"that's basically a 'dump your parameters' command, it doesn't
+run anything, but it does load missing firmware except when it doesn't"* — so it is a warm-start
+property dump on radios whose FPGA was already loaded, and it performs no clock sync at all. It does
+not measure the path the harness takes.
+
+**Measured properly — one radio, `womm_rx_hold`, 0.1 s capture, warm FPGA, wall clock:**
+
+| configuration | run 1 | run 2 |
+|---|---|---|
+| `WOMM_EXTCLK=0` (device init only) | **3.70 s** | 3.35 s |
+| `WOMM_EXTCLK=1` (init + reference + PPS + start offset) | **10.20 s** | 9.89 s |
+
+**The owner predicted 3.7 s before this was run, and `WOMM_EXTCLK=0` measured 3.70 s.**
+
+So the record is now: the inherited "~2.5 s" was **too low**, not too high; §10.16's 0.5–0.9 s is
+**withdrawn** as a warm-start property dump rather than a bring-up; and the real device-init figure
+is **~3.4–3.7 s**.
+
+**The external-clock path costs ~6.3 s more, and it is all ours by choice:**
+
+| component | cost | where |
+|---|---|---|
+| `ref_locked` polling | up to 3 s | `kRefLockTimeoutMs = 3000` |
+| `set_time_unknown_pps()` | 1 – ~2 s | waits for a PPS transition, then arms the following edge |
+| `start_time_offset` | **5 s** | set by both harnesses when `WOMM_EXTCLK=1` |
+
+5 s of that is a deliberate arming offset we chose, not anything the driver imposes. This decomposes
+the ~10 s completely and shows most of it is policy rather than hardware.
+
+**This is the third time in one session that a timing figure turned out to be measuring something
+other than what it named** — after §10.6's grep that hid failures and §10.11's rate comparison that
+did not check the achieved rate. The pattern is not carelessness about arithmetic; it is naming a
+quantity before checking that the instrument produces it.
+
+### 10.19 Device args, repeated — the effect is real
+
+§10.15 reported one run per cell. Repeated at full rate, total overflow across all windows and
+radios per run:
+
+| configuration | runs | mean | range |
+|---|---|---|---|
+| no `num_recv_frames` anywhere | 20, 25, 32, 24 | **25.3** | 20–32 |
+| `num_recv_frames=1024` in **device args** | 3, 4, 17, 6 | **7.5** | 3–17 |
+
+**Roughly 3× fewer overflows, and the ranges barely overlap** — the baseline minimum (20) exceeds
+the device-args maximum (17). Unlike §10.7's withdrawn claim, this one survives repeats.
+
+Still true, and still the point: **`num_recv_frames` in *stream* args does nothing** (§10.15), which
+is where every harness has always put it. The working placement is device args, which none has used.
+
+**Not a USB bandwidth effect**, per the owner: no radio or bandwidth issue here is USB-related.
+`num_recv_frames` is host-side buffer depth, so it buys tolerance for host scheduling stalls. That is
+consistent with the correlated stall of §10.4 — deeper buffers absorb it, they do not remove it, and
+the counts remain correlated across radios.

@@ -76,7 +76,7 @@ inline constexpr double      kRxGainDb      = 20.0;   // well inside range for e
 inline constexpr std::size_t kRadioDepth    = 8UZ;    // mul/div pairs per radio chain
 inline constexpr std::size_t kBallastDepth  = 8UZ;
 inline constexpr gr::Size_t  kBallastSize   = 65536U;
-inline constexpr double      kWarmupSec     = 3.0; // B210 bring-up is ~2.5 s
+inline constexpr double      kWarmupSec     = 3.0; // B210 bring-up is ~3.4-3.7 s
 inline constexpr double      kMeasureSec    = 8.0;
 
 // A B2xx receives on RX2 or on the RX half of RX/TX. Neither emits. Anything not
@@ -210,7 +210,7 @@ Trial runTrial(const std::vector<std::string>& serials, double rateHz, std::size
     std::thread       runner([&] { ok.store(sched.runAndWait().has_value(), std::memory_order_relaxed); });
 
     // WAIT FOR EVERY RADIO TO PRODUCE ITS FIRST SAMPLE, then settle. A fixed sleep
-    // is wrong here and has already cost this project twice: bring-up is ~2.5 s PER
+    // is wrong here and has already cost this project twice: bring-up is ~3.4-3.7 s PER
     // B210 and they initialise serially, so three devices need ~7.5 s and any
     // constant chosen for one radio silently measures zero for three.
     const auto readyBy = std::chrono::steady_clock::now() + std::chrono::seconds(60);
@@ -226,7 +226,7 @@ Trial runTrial(const std::vector<std::string>& serials, double rateHz, std::size
     // CROSS-PROCESS START BARRIER. Without this the separate-process test is
     // meaningless: launches must be staggered (UHD discovery cannot handle
     // concurrent enumeration), but a staggered launch puts one process's B210
-    // bring-up - FPGA load plus USB enumeration, ~2.5 s of heavy work - inside
+    // bring-up - FPGA load plus USB enumeration, ~3.4-3.7 s of heavy work - inside
     // another process's measurement window. A process then reports 4 MS/s where it
     // reports 42 alone, and that is its neighbour booting, not a throughput result.
     // Announce readiness, wait for everyone, and only then start measuring.

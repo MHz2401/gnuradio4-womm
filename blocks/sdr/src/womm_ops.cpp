@@ -176,7 +176,12 @@ int main(int argc, char* argv[]) {
         gr::property_map  cfg{
             {"name", blockName},
             {"device", "uhd"s},
-            {"device_parameter", std::format("serial={}", serial)},
+            // ⚠ Soapy and Ettus use the same parameter NAMES in different PLACES, and
+            // putting one in the wrong place fails silently. Ettus documents
+            // recv_frame_size as "part of the device args" - which is here - whereas
+            // SoapySource's stream_args reach uhd::stream_args_t.args via get_rx_stream.
+            // They are not the same channel and may not be honoured equally.
+            {"device_parameter", std::getenv("WOMM_DEV_ARGS") ? std::format("serial={},{}", serial, std::getenv("WOMM_DEV_ARGS")) : std::format("serial={}", serial)},
             {"num_channels", gr::Size_t{kChannels}},
             {"sample_rate", static_cast<float>(rateHz)},
             {"master_clock_rate", envOr("WOMM_MCR", kMcrHz)},
@@ -241,7 +246,7 @@ int main(int argc, char* argv[]) {
     std::thread       runner([&] { ok.store(sched.runAndWait().has_value(), std::memory_order_relaxed); });
 
     // Wait for EVERY channel to produce before timing anything. Four B210s bring up
-    // serially at ~2.5 s each, and with an external time source each also blocks ~2 s
+    // serially at ~3.4-3.7 s each, and with an external time source each also blocks ~2 s
     // in set_time_unknown_pps, so a fixed sleep would measure start-up.
     const auto ready = [&] {
         return std::ranges::all_of(taps, [](const RadioTap& t) { return std::ranges::all_of(std::views::iota(0UZ, kChannels), [&t](std::size_t ch) { return t.count(ch) > 0U; }); });

@@ -71,7 +71,7 @@ using TRadio = std::complex<float>;
 inline constexpr std::size_t kChannels     = 2UZ;
 inline constexpr double      kCentreFreqHz = 2401e6; // ISM/amateur; RX-only here, nothing is emitted
 inline constexpr double      kRxGainDb     = 20.0;   // well inside range for either B2xx RX antenna
-inline constexpr double      kReadyTimeout = 60.0;   // B210 bring-up is ~2.5 s; three radios serialise
+inline constexpr double      kReadyTimeout = 60.0;   // B210 bring-up is ~3.4-3.7 s; three radios serialise
 
 // UHD refuses master_clock_rate above 30.72 MHz once two RX channels are active,
 // and the per-channel rate is MCR/decimation - so 15.36 MS/s per channel is the
@@ -322,7 +322,7 @@ int main(int argc, char* argv[]) {
     };
 
     // Wait for first samples before reporting rates, so bring-up does not appear
-    // as a slow channel. A fixed sleep is wrong here: bring-up is ~2.5 s per B210.
+    // as a slow channel. A fixed sleep is wrong here: bring-up is ~3.4-3.7 s per B210.
     const auto readyBy = std::chrono::steady_clock::now() + std::chrono::duration<double>(kReadyTimeout);
     while (!stopRequested.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < readyBy) {
         const auto c = counts();

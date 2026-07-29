@@ -235,7 +235,7 @@ two hypotheses were 300× *closer* than the noise.
 
 ### Known cautions
 
-- **Measure the streaming interval, never total elapsed.** Device init (~2.5 s per B210) and graph
+- **Measure the streaming interval, never total elapsed.** Device init (~3.4-3.7 s per B210) and graph
   construction dwarf short runs. This error invalidated two separate measurements.
 - **Some actions must drop samples** — retuning among them. Dropped samples around a deliberate
   reconfiguration are expected behaviour, not a defect.

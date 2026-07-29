@@ -125,7 +125,7 @@ Point runAtRate(double rateHz) {
     const auto        t0 = std::chrono::steady_clock::now();
     std::thread       runner([&] { ok.store(sched.runAndWait().has_value(), std::memory_order_relaxed); });
 
-    // Device init (B210: ~2.5 s of FPGA/codec/clock bring-up) must NOT count toward
+    // Device init (B210: ~3.4-3.7 s of FPGA/codec/clock bring-up) must NOT count toward
     // the streaming interval, or the achieved rate is diluted by setup - the same
     // error that invalidated the first scaling curve. Time from the first sample.
     std::chrono::steady_clock::time_point tFirst{};
@@ -185,7 +185,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Last-resort backstop, below the per-point one: a spinning worker cannot defeat
-    // SIGALRM. Device bring-up on a B210 is ~2.5 s, so budget generously per point.
+    // SIGALRM. Device bring-up on a B210 is ~3.4-3.7 s, so budget generously per point.
     alarm(static_cast<unsigned>(static_cast<double>(rates.size()) * (kDurationSec + 60.0)) + 60U);
 
     std::println("womm B210 end-to-end rate sweep");

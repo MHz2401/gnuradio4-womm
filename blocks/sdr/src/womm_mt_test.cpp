@@ -135,10 +135,11 @@ int main(int argc, char* argv[]) {
             {"rx_gains", std::vector<double>(kChannels, envOr("WOMM_GAIN", kRxGainDb))},
             {"rx_bandwidths", std::vector<double>(kChannels, rateHz)},
             {"rx_antennae", std::vector<std::string>(kChannels, antenna)},
-            // NOT held constant against womm_rx_hold until now: that harness sets
-            // num_recv_frames=1024 and this one set nothing, so the MT-vs-MP comparison
-            // in RESULTS.md 9.14 differed by USB transfer-buffer depth as well as by
-            // topology. Default matches the MP harness; empty reproduces the old runs.
+            // Matches womm_rx_hold, which set this while this harness set nothing - so
+            // 9.14's "only the topology changed" was not true. ⚠ BUT MEASURED INERT:
+            // num_recv_frames in STREAM args has no effect at all (RESULTS.md 10.15).
+            // It works only in DEVICE args, which no harness has ever used. Kept for
+            // parity, not for effect.
             {"stream_args", std::getenv("WOMM_STREAM_ARGS") ? std::string(std::getenv("WOMM_STREAM_ARGS")) : std::string("num_recv_frames=1024")},
             {"max_time_out_us", std::uint32_t{1000000}},
             {"max_overflow_count", gr::Size_t{0}},
@@ -187,7 +188,7 @@ int main(int argc, char* argv[]) {
     std::thread       runner([&] { ok.store(sched.runAndWait().has_value(), std::memory_order_relaxed); });
 
     // Wait for EVERY channel to produce, then settle. Four B210s bring up serially
-    // at ~2.5 s each, and with an external time source each also blocks ~2 s in
+    // at ~3.4-3.7 s each, and with an external time source each also blocks ~2 s in
     // set_time_unknown_pps - so a fixed sleep would measure start-up, not rate.
     const auto ready = [&] {
         return std::ranges::all_of(taps, [](const RadioTap& t) {
