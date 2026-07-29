@@ -2447,3 +2447,65 @@ rather than a technical one (`HANDOFF.md` upstream landscape).
 on its own work, with a barrier to align the start. gr4 gives blocks to a worker pool that *polls*
 for work, with no barrier at all. Two of this project's largest wins — the Category F condvar and the
 Category G ring-buffer fixes — were both repairs to that polling machinery.
+
+### 10.25 ★ THE SEPARATED REPOS HAVE NOT TOUCHED IT — there is no "real" radio-start loop
+
+Owner's hypothesis: the serial init loop came from FAIR, whose domain is digitisation — many
+low-bandwidth sensors, where nothing cares whether detectors power up together and microseconds of
+slop are irrelevant. Reasonable, and it fits. But then gnuradio.org's own people probably do it like
+GR 3.x, and the active development is in the **separated** `gnuradio4-*` repos rather than the
+monolith we forked. So: check those before asking the mailing list.
+
+**Checked. There is nothing there.**
+
+| repo | HEAD | date |
+|---|---|---|
+| `gnuradio4-core` | `c35f5c8` | 2026-07-13 |
+| `gnuradio4-blocks` | `bfafe4a` | 2026-07-23 |
+
+Both are more recent than our fork's base, so they *are* being worked on. But:
+
+- **`-core`'s `Scheduler.hpp` is byte-identical to `gnuradio/gnuradio4` main.** Not similar —
+  `diff` reports no differences at all. This extends `HANDOFF.md`'s "(C) is (A) repackaged" from a
+  16-commit sample to the specific file in question.
+- **Zero barrier mentions** in it (`grep -ci barrier` → 0).
+- **Same serial `forEachBlock` start**, same `// fallback spin sleep` at line 44, same `yield()` at
+  196 and 689 — identical line numbers.
+- **`Scheduler.hpp` has not been touched since 2026-04-20**, and the last three commits to it are
+  sonar lint fixes (`cpp:S5421`, `cpp:S3743`, `cpp:S3608`) plus "more eager message processing".
+  **Nothing on the start path since April.**
+
+**And `-blocks`' `SoapySource.hpp` is the same design as ours**, with zero barrier mentions,
+`registerActivation` + `defaultIoPool()->execute([this]{ ioReadLoop(); })`.
+
+### ⚠ It also still carries the defect that made multi-channel receive impossible
+
+`gnuradio4-blocks/blocks/sdr/include/gnuradio-4.0/sdr/SoapySource.hpp:184`:
+
+```cpp
+soapy::detail::DeviceRegistry::registerActivation(_devKwargs, [this] {
+    if (auto r = _rxStream.activate(); !r) {          // ← bare activate()
+```
+
+**That is H-1**, the defect this project found and fixed on 2026-07-27 (`DRIFT.md` Category H): a bare
+`activate()` means "stream now", and UHD refuses it on a multi-channel streamer. **The actively
+maintained separated repo still cannot do two-channel receive on a B2xx.**
+
+### Conclusion: the code has no answer, so the question is worth asking
+
+There is no alternative radio-start path hiding in the separated repos. The serial start, the absent
+barrier and the polling worker are the current state of gnuradio.org's actively maintained tree, and
+the SDR block there still has H-1.
+
+**A mailing-list question is now well-founded and can be asked with citations** rather than
+impressions. What it would need to establish:
+
+1. Is the serial `forEachBlock` → `changeStateTo(RUNNING)` start intended, or has nobody exercised a
+   multi-device flowgraph in gr4?
+2. Is there a planned equivalent of 3.10's `scheduler_tpb` start barrier
+   (`thread::barrier(blocks.size()+1)` + per-block thread), or is that considered out of scope?
+3. Is `SoapySource`'s bare `activate()` known to be incompatible with multi-channel UHD streamers?
+
+**Licence note for any port:** GR 3.10 is GPL-3.0. Its *design* may be reimplemented in this MIT
+tree; its source may not be copied. The gr4 trees are MIT (`-studio` GPL-3.0), so nothing about
+contributing a barrier upstream is licence-blocked.
