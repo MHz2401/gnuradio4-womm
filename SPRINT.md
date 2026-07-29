@@ -85,8 +85,19 @@ linear-proportionality criterion, which the owner withdrew: four radios now run 
 without denting the machine, so capacity is no longer the question.
 
 **"Unanticipated" is load-bearing.** Retuning *must* drop samples. A drop around a deliberate
-reconfiguration is expected behaviour; the criterion is about surprises, not about zero drops. Part
-of S2-3 is drawing that line explicitly, because nothing currently does.
+reconfiguration is expected behaviour; the criterion is about surprises, not about zero drops.
+
+**S2-3 is a PROCEDURE, not an enumeration** (owner, 2026-07-28). Listing every condition that can
+cause an overflow up front is open-ended — the set is countable but possibly not finite, and
+attempting it first is the expensive way to start. **Evaluate lazily instead:**
+
+> When activity X produces an overflow or underflow: review the operations the radio was asked to
+> perform, then use web search, documentation search, and/or ask the owner to establish whether
+> those operations cause overflow/underflow **always**, or **only under condition Y**.
+
+The catalogue of anticipated causes is then a *by-product* of running the procedure — it accretes as
+conditions are actually met, and each entry arrives with the evidence that put it there. An entry
+that is never triggered is an entry nobody needed to write.
 
 ### Backlog, ordered
 
@@ -94,7 +105,7 @@ of S2-3 is drawing that line explicitly, because nothing currently does.
 |---|---|---|
 | S2-1 | **Define the cross-process arming barrier**, then implement it. Currently undefined — `RESULTS.md` §9.13; it exists as code in `womm_bmax.cpp:233-246` and nowhere else | a written contract — what it guarantees, the bound on the last-arrival window, failure modes, timeout behaviour — then an implementation meeting it, then PPS-edge agreement across ≥5 runs |
 | S2-2 | **Tag defaults.** `tag_interval` is sample-derived (§9.12); the open part is the *default* for a block that does not know its rate at construction | ~1 tag/s at any rate without the caller computing it, and a `qa_` test pinning the interval in samples |
-| S2-3 | **★ Operations under load** — the new tier-1 criterion made testable | an enumerated list of which operations may legitimately drop samples and which may not; then retune, gain change and settings change exercised on 4 radios × 2 channels at capacity, with every drop attributable to an anticipated cause and lock held throughout |
+| S2-3 | **★ Operations under load** — the tier-1 criterion as a DIAGNOSTIC PROCEDURE, not an enumeration | a written procedure (below) plus a first pass applying it to retune, gain change and settings change on 4 radios × 2 channels at capacity |
 | S2-4 | **Document parameter conventions per platform** — replaces the withdrawn gain-test item | gain, antenna and rate conventions recorded for B210 / RTL-SDR / HackRF, with ranges and the fact that **gain has no universal convention** stated plainly |
 | S2-5 | **Define "Usable UI"** (owner, D10 — now a tier-1 item) | a written definition. It is coined but undefined; per the standing jargon rule, **do not build against it until it is defined.** Separate discussion; the definition is the deliverable |
 
@@ -139,3 +150,68 @@ Owner, 2026-07-28. Full text in `BUILD_JOURNAL.md` D8–D10.
 | Q5 patch-series restructure | **Demoted** (D9). Get things done first; keep LGPL separably revertible |
 | Q6 upstream contribution | **Intended** — but no consideration in support of a PR may constrain "Works on My Mac" (D9) |
 | Q7 gain test | **Not a defect.** Withdrawn; folded into S2-4 as documentation |
+
+---
+
+## Blocks — backlog and light research (2026-07-28)
+
+### What the demo actually uses: four block types, and no DSP at all
+
+`womm_rx_hold` emplaces exactly four: `SoapySource`, `CountingSink`, `BasicFileSink`, `TagSink`.
+Source straight to sink. **There is no flow-graph in the demo worth the name** — which is the
+owner's point: it is not GR without blocks. `womm_bmax` adds `MultiplyConst`/`DivideConst` as
+ballast, but that is synthetic load, not signal processing.
+
+### ⚠ CORRECTION — the "ISM traffic" was an inference, not a detection
+
+I wrote that extra spectral peaks were "2401 MHz ISM traffic" in `RESULTS.md` §9.11 and in session
+notes. **That was not measured.** What was measured: radios with better antennas detected 14-17
+peaks against a 13-line comb, and the extras failed the comb fit. Attributing them to WiFi came
+from *knowing 2401 MHz sits in WiFi channel 1*, not from identifying anything.
+
+They could equally be LO spurs, images, harmonics of the transmitted comb, or another emitter
+entirely. **No block in the demo classifies a signal**, because the demo contains no classifier —
+the comb detector is a numpy script working on a file after the fact.
+
+Recorded as a correction because it is the same species as the retracted instruments: a plausible
+label attached to an unexplained observation. The honest statement is "peaks that are not part of
+the comb, origin unidentified".
+
+### In-tree blocks — 44 registered types across 8 modules
+
+| module | count | module | count |
+|---|---|---|---|
+| testing | 9 | electrical | 6 |
+| math | 8 | filter | 5 |
+| basic | 7 | timing | 2 |
+| sdr | 6 | fft | 1 |
+
+Enumerated from `GR_REGISTER_BLOCK` declarations. **There is no status field** — registration says a
+block exists and is constructible, not that it works, is tested, or is Mac-clean. A status list would
+have to be built, and the honest axes are: has a `qa_` test / exercised on this platform / exercised
+with real hardware. Backlog item, not yet scoped.
+
+### `BufferToTagRatioFromPeriod` — assessment: **probably not a block**
+
+Proposed: given sample rate, buffer size and a desired period, output the nearest integer number of
+buffers between tags; lightweight to compare.
+
+**The computation is already implemented, inside `SoapySource`.** §9.12's sample-gated tag emission
+computes exactly this: `ceil(rate x interval / chunk)`, measured at 63 chunks for 0.512 MS/s with
+8192-sample chunks. It is three lines in the read loop.
+
+**Why a block is the wrong shape for it, as stated:** gr4 blocks are stream processors — they
+consume and produce samples. This consumes three *settings* and produces one *number*, which is
+configuration, not dataflow. Expressed as a block it would have no meaningful ports, and would add
+graph topology to do arithmetic.
+
+**The owner's own caution is the right one, and points at the case where it IS a block.** If the
+rate changes *at runtime* — retune, resampling, a settings message — then something must recompute
+the interval and push it to the tagging block. That is a genuine dynamic-flowgraph concern, gr4 has
+the message machinery for it (`Scheduler.hpp` handles settings and graph-edit messages), and a small
+block that watches `sample_rate` and emits a settings update is expressible and useful.
+
+**Recommendation:** keep it a helper function in the settings path for now — that is where the logic
+already lives and it costs nothing. Revisit as a block **only** when a runtime rate change actually
+needs to drive tag interval automatically. That condition has not arisen; per the S2-3 principle,
+evaluate it lazily.
