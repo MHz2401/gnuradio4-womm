@@ -2222,3 +2222,87 @@ is where every harness has always put it. The working placement is device args, 
 `num_recv_frames` is host-side buffer depth, so it buys tolerance for host scheduling stalls. That is
 consistent with the correlated stall of §10.4 — deeper buffers absorb it, they do not remove it, and
 the counts remain correlated across radios.
+
+### 10.20 ★ THE SERIAL BLOCK START IS UPSTREAM GNURADIO4'S, NOT OURS — and GR 3.10 does it right
+
+Owner asked directly: did we write the serial loop in `Scheduler.hpp`, or someone else?
+
+**Someone else. It is upstream `gnuradio/gnuradio4`, unmodified by us.**
+
+- `git blame` on the loop (`Scheduler.hpp:660-675`): Sergio Martins (13 lines), Ivan Čukić, Ralph J.
+  — all upstream authors. No womm commit touches it.
+- Upstream `gnuradio/gnuradio4` main carries the identical structure at its `:586-597`:
+  `graph::forEachBlock<TransparentBlockGroup>(...)` → `block->changeStateTo(lifecycle::RUNNING)`.
+
+**What that means for four radios.** `forEachBlock` is a serial walk under `_executionOrderMutex`.
+Each `changeStateTo(RUNNING)` runs `SoapySource::start()` → `reinitDevice()`, measured at
+**~3.4-3.7 s per B210** (§10.18). Four radios therefore bring up **one after another**, ~14 s end to
+end, with the first streaming while the last is still initialising.
+
+**Owner: in a GNU Radio 3.10 flowgraph, four radios start in different threads simultaneously.**
+Each spins up its LO and tuner, attaches to the external reference and unknown-PPS, reports status
+as it goes, then all rendezvous on a PPS edge and start together — issuing a beginning-of-stream tag
+carrying GPS time and sample count 0, followed by time-aligned samples.
+
+**So this is a gr4 architectural regression against 3.10 for multi-device work**, in upstream code,
+and it is not something our fork introduced. Recorded here because it changes who owns the problem.
+
+### What the startup SHOULD look like (owner, 2026-07-29)
+
+Stated as the target, since it is not what we do:
+
+1. Spin each radio up in **its own thread**, as fast as possible; the thread only starts the radio.
+2. Then do **almost nothing** for ~4 s — watch for tags and messages. LO-lock and similar status
+   reports are expected here.
+3. **Overflow and underflow do not apply during startup.** The concept does not exist yet.
+4. Receive four **beginning-of-stream tags** — sample 0 and its time. That is the starting gun.
+5. **If you take no other action and see overflow or underflow, something is wrong.**
+
+Our harnesses do none of this: they wait for a sample *count* to become non-zero rather than for a
+start-of-stream tag, and they count overflow from `start()` — including the whole serial bring-up.
+
+### 10.21 ⚠ REFUTED — widening the arming window does not fix it
+
+My hypothesis from the serial-start finding: `start_time_offset = 5 s` cannot cover ~14 s of serial
+bring-up, so widening it should let all four arm before any starts.
+
+Total overflow, full rate, `num_recv_frames` in device args:
+
+| `start_time_offset` | runs |
+|---|---|
+| 5 s | 10, 5 |
+| 20 s | 15, 6 |
+| 30 s | 5, 8 |
+
+**No effect.** The prediction was wrong. Either the arming window is not what serialises the start,
+or the overflow being counted is not the startup overflow at all. Recorded as a refuted prediction
+rather than quietly dropped.
+
+### 10.22 There is no "the gr4 Soapy driver" to start over from
+
+Owner asked whether we are using the GR4 Soapy driver or something else, and whether starting over
+from the GR4 one had been tried.
+
+**Answer: there is nothing to start over from, and no, it has not been tried.**
+
+Upstream `gnuradio4`'s entire SoapySDR provision is `CMakeLists.txt:700-702`:
+
+```cmake
+# Fetch SoapySDR -- needed since the distribution version is incompatible w.r.t. stdlibc++ vs. libc++
+if(CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)") # WIP
+  find_package(SoapySDR CONFIG)
+endif()
+```
+
+**The comment says "Fetch" and the code does not fetch.** It calls `find_package` on whatever is
+installed, guarded by a `# WIP` marker. There is no pinned version, no submodule, no FetchContent
+declaration, and no CI that exercises it — `.github/workflows/` mentions neither Soapy nor UHD.
+
+So gr4 has **no opinion** about which SoapySDR is correct. Our vendoring was a local choice filling a
+gap upstream left open, not a deviation from an upstream pin.
+
+**What is NOT yet investigated, and the owner's hypothesis stands:** whether GNU Radio **3.10.x**
+packages a known-good Soapy + UHD combination that would be the better basis. The reasoning is sound
+— 3.10 ships a much richer set of Ettus utilities via `apt install gnuradio`, and the absence of any
+UHD/HackRF mention in gr4's docs would be explained if maintainers assume everyone gets drivers from
+the 3.10 packaging. **Not checked. Open.**

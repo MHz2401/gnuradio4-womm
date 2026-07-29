@@ -211,7 +211,12 @@ int main(int argc, char* argv[]) {
         if (const char* env = std::getenv("WOMM_EXTCLK"); env && std::string_view(env) == "1") {
             cfg["clock_source"]      = std::string("external");
             cfg["time_source"]       = std::string("external");
-            cfg["start_time_offset"] = 5.0f;
+            // The arming window must cover the WHOLE serial bring-up, not one radio's.
+            // Scheduler.hpp:662 walks blocks with forEachBlock under _executionOrderMutex,
+            // so SoapySource::start() - reinitDevice(), ~3.4-3.7 s - runs once per radio
+            // one after another. At 5 s the first radio is streaming while the last is
+            // still initialising, which is the startup overflow.
+            cfg["start_time_offset"] = static_cast<float>(envOr("WOMM_START_OFFSET", 5.0));
         }
         auto&    src = graph.emplaceBlock<gr::blocks::sdr::SoapySource<TRadio, kChannels>>(cfg);
         RadioTap tap{.serial = serial, .blockName = blockName, .src = std::addressof(src)};
