@@ -1689,6 +1689,10 @@ tags, which is what an application actually consumes.
 
 ### 9.13 The cross-process arming barrier is NOT defined — stated because it was assumed
 
+**Superseded in part:** the owner has since added a front-matter definition — see "FORWARD
+DEFINITIONS" (1) at the top of this document, which binds `cross-process start barrier` and
+`cross-process arming barrier` as aliases. What remains open below is the *contract*, not the term.
+
 The owner asked whether it is clearly defined anywhere. **It is not.** It exists only as an
 implementation in `womm_bmax.cpp:233-246` plus a passing mention at `RESULTS.md:1241`. No contract,
 no stated guarantee, no failure modes. §9.9 and §9.10 both proposed "a cross-process arming barrier

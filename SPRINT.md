@@ -103,7 +103,7 @@ that is never triggered is an entry nobody needed to write.
 
 | # | Item | Definition of done |
 |---|---|---|
-| S2-1 | **Define the cross-process arming barrier**, then implement it. Currently undefined — `RESULTS.md` §9.13; it exists as code in `womm_bmax.cpp:233-246` and nowhere else | a written contract — what it guarantees, the bound on the last-arrival window, failure modes, timeout behaviour — then an implementation meeting it, then PPS-edge agreement across ≥5 runs |
+| S2-1 | **Specify the cross-process start/arming barrier's GUARANTEE**, then implement to it. The *term* is now defined by the owner — `RESULTS.md` "FORWARD DEFINITIONS" (1) — and the current behaviour is documented. What is still missing is the **contract** | a written guarantee — the bound on the window between last arrival and subsequent action, failure modes, timeout behaviour — then an implementation meeting it, then PPS-edge agreement across ≥5 runs |
 | S2-2 | **Tag defaults.** `tag_interval` is sample-derived (§9.12); the open part is the *default* for a block that does not know its rate at construction | ~1 tag/s at any rate without the caller computing it, and a `qa_` test pinning the interval in samples |
 | S2-3 | **★ Operations under load** — the tier-1 criterion as a DIAGNOSTIC PROCEDURE, not an enumeration | a written procedure (below) plus a first pass applying it to retune, gain change and settings change on 4 radios × 2 channels at capacity |
 | S2-4 | **Document parameter conventions per platform** — replaces the withdrawn gain-test item | gain, antenna and rate conventions recorded for B210 / RTL-SDR / HackRF, with ranges and the fact that **gain has no universal convention** stated plainly |
@@ -131,6 +131,17 @@ authoritative-sources rule it is a prior-session timing statement, so it is neit
 question. It was replaced, not explained, and that is sufficient.
 
 - Is the 39.8 ms epoch agreement stable across launch timings, or an artefact of this stagger? (S2-1)
+
+**Why S2-1 is hard, and worth the sprint slot (owner, 2026-07-28):** the cross-process start barrier
+was **one of the core console tasks of the MCM** — the Multi-Console Monstrosity, the only
+performant multi-radio system the owner had before this one. It is not incidental plumbing; it is
+the mechanism that made that architecture necessary in the first place.
+
+What changed here is narrower than it looks and worth stating precisely. **We kept the
+multi-process topology** — one process per radio, which was the MCM's actual insight, and which
+still governs `WOMM_THREADS` sizing and the 12× oversubscription trap. What we removed is the
+**manual console per radio**: orchestration is now one CLI, and the shared PPS epoch replaces
+hand-coordinated starts. The "multi" survived; the "console" and the "monstrosity" did not.
 - What explains the residual 4.1 Hz between radios — genuine LO synthesis differences, or
   measurement floor? At 1.72 ppb it is near the limit of a 1 s capture.
 - What is a "Usable UI"? (S2-5 — the term exists, the definition does not.)
