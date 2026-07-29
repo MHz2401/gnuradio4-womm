@@ -69,6 +69,11 @@ Everything below is **unique to the `-womm` fork**. Everything not listed is ups
 - **No serials, absolute paths or site details in the repo.** Radios come from `$B210U00…$B210U03`
   in your shell; output directories are given on the command line.
 
+## Other topics and definitions
+
+- `cross-process start barrier` and `cross-process arming barrier` refer to a process and mechanism
+best understoood by reading `## FORWARD DEFINITIONS` section of `RESULTS.md`
+
 ## Where it stands
 
 Four B210s, eight channels, **122.88 MS/s aggregate at ratio 1.0000**, one PPS epoch, LO agreement

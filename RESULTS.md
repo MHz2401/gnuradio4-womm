@@ -5,6 +5,29 @@ Repository root: `/Users/whom/dvel/ghzhub/GR4-fork/gnuradio4-womm`.
 
 ---
 
+## FORWARD DEFINITIONS 
+
+Some terms are initially clear from context, and then re-used without repeating the definition, 
+which is acceptable practice.  In such cases, definitions are added here.
+
+### (1) cross process arming barrier/start barrier
+
+The `cross-process start barrier` / `cross-process arming barrier` is a recurring topic and a 
+challenging problem.  It eventually needs a cleaner solution beyond the scope of current 
+session (pre-Sprint-2 asof 20260728 1900H Pacific). 
+
+This is fundamentally a process-and-multiple-device sync mechanism that's best understood from 
+a combination of code and usage. See the implementation of `womm_bmax.cpp:233-246` and do a 
+case-insensitive search for `cross-process` in `RESULTS.md` (this document). 
+
+What it currently does: each process touches `${WOMM_BARRIER_DIR}/ready.<pid>`, then polls until
+`WOMM_BARRIER_N` such files exist, with a 120 s deadline. What it does **not** do is bound the
+window between the last arrival and any subsequent action, which is the only property that would
+make PPS-edge agreement structural rather than observed. Specifying it is sprint-2 work, not a
+one-line reuse.
+
+---
+
 ## Phase 3 — stock baseline
 
 **Configuration.** `origin/main` @ `44275ed` (`4.0.0-RC2-13`), no local patches to gnuradio4.
