@@ -2969,3 +2969,71 @@ not from timing:
 **Rule earned, and it belongs with the instrument lessons:** *check machine load before believing a
 timing measurement, and record it alongside the result.* Every harness here reports rates and counts
 and none reports the load average it ran under. That is now the obvious gap.
+
+### 10.33 ⚠ CORRECTION — "the host can't keep up" is wrong, and I over-withdrew C-3
+
+Owner, 2026-07-30, correcting my §10.31 phrasing *"the host can't always keep up at the hardware
+ceiling"*.
+
+#### The hardware can keep up. This is measured and it is arithmetic.
+
+**Owner's prior-session result (2026-07-27/28, therefore authoritative under the timing rule):** four
+radios, **separate processes**, synced to REF and PPS, **at full capacity, for several minutes,
+repeated** — no overflow or underflow detected; per-second tags from each radio showed no drops and
+no loss of lock. Mac system monitor throughout: **20-25 % user-space, kernel-space no higher than
+idle.**
+
+**And the transport has margin by arithmetic:**
+
+| quantity | value |
+|---|---|
+| USB ports on the Mac Studio | 8, **each with its own bus** (6 are Thunderbolt-4 enumerating as USB-3 for these devices) |
+| pessimistic per-port rate, 2023 Mac Studio, after coding and protocol overhead | **400 MB/s** |
+| bytes per `complex<float>` sample | 8 |
+| ⇒ pessimistic per-port sample rate | **50 MS/s** |
+| both channels of one B210 at full rate | 30.72 MS/s = **~60 % of that** |
+
+**So a fully loaded B210 uses about 60 % of its port's pessimistic capacity, and the CPU sat at
+20-25 %.** The practical ceiling is not throughput — it is that there are only 8 ports and 2 are
+occupied. The owner's estimate of the real limit was **10-12 more B210s**.
+
+**My sentence was wrong.** What could not keep up in my measurements was a machine with a load
+average of 35 on 24 cores (§10.32) — and possibly gr4's software path — **not the host hardware.**
+"Host" conflated the machine with the software running on it, and the machine is not the constraint.
+That distinction is the point of this project.
+
+#### And C-3's "zero overflows" should not have been withdrawn as unmeasured
+
+§10.1 withdrew it on the grounds that no counter existed and the claim came from the sample ratio.
+**Checked, and that is wrong on both halves:**
+
+- `_overflowCount` **already existed** at session start — what I added was `womm_rx_hold` *printing*
+  it, not the counter itself.
+- **`emitOverflowTag()` and the `rx_overflow` tag also already existed** — 4 occurrences at
+  `75f9bb3`, from upstream `b4189e4` — and `womm_rx_hold`'s tag mode captures tags through `TagSink`
+  with `log_tags = true`.
+
+So the prior session had a working instrument: **per-second tags per radio, checked for drops and
+loss of lock.** That is direct observation, not inference from a ratio.
+
+**§10.1 is corrected to a narrower statement:** `womm_rx_hold` did not *print* the overflow counter,
+so a run that overflowed would not have shown it in the summary line — but the tag stream would have,
+and the owner reports it was watched. **C-3 stands.** My own contradicting measurement (9-14
+overflows per radio, §10.1) was taken under the load documented in §10.32 and is the suspect one.
+
+#### Consequence for (A), (B), (C)
+
+The owner notes these come from the Ettus B210 manual as specific best-practice configurations —
+authoritative source (2) and (3) under the timing rule, not suggestions:
+
+- **(A)** request **15.000000 MS/s** rather than 15.36 — headroom rather than the absolute limit
+- **(B)** set the **sample rate, not the MCR**, and read back the reported rate once settled
+- **(C)** **1024-byte** buffers, better than 512 or 2048
+
+**Status: none is properly tested.** (A) was run once at MCR 30.00/rate 15.00 *without* device args
+(§10.11); (B) only as `master_clock_rate = 0`, which makes UHD choose 16 MHz at device-creation time
+before any rate is requested (§10.11) — **`master_clock_rate` as a *device arg* is untested, and that
+is the same wrong-place trap that made `num_recv_frames` inert** (§10.15); (C) once, at full rate,
+mixed with other changes.
+
+All three must be re-run **on a quiet machine, with load average recorded per run** (§10.32).
