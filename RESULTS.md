@@ -3249,3 +3249,52 @@ misattribution should not propagate.
 **Confirms C-9 with its mechanism now cited from the vendor rather than inferred:** `UNKNOWN_PPS` is
 the multi-device primitive *because* step 1 waits for a transition, which is what puts every radio on
 the same edge. And UHD's "≤ 2 seconds" is the manufacturer's own figure for the cost §10.18 measured.
+
+### 10.37 ⚠ CORRECTION TO §10.30 — `AudioBlocks` is NOT a conformant device source
+
+§10.30 claimed *"`AudioBlocks.hpp` is the proof that a **device** block can be conformant: it runs an
+IO thread **and** implements `processBulk`."* **Wrong, and the error was file-level grep
+contamination** — that file declares two structs, and the `processBulk` I found belongs to
+`AudioSink`, not `AudioSource`.
+
+Read properly:
+
+| block | `work()` override | `processBulk` | IO threads |
+|---|---|---|---|
+| `AudioSource` | **1** | **0** | 2 |
+| `SoapySource` | **1** | **0** | 1 |
+| `RTL2832Source` | **1** | **0** | 1 |
+
+**Every in-tree device source uses the `work()`-override plus IO-thread pattern. There is no
+scheduler-driven device source anywhere in the tree.** The owner's independent assessment —
+*"I would not count on the AudioBlocks being the standard for quality, it's been looked at"* — agrees.
+
+This is the **third** error of one class today, after the truncated block list (§10.29) and the
+truncated `getStreamArgsInfo` (`SOAPY_UHD_MAP.md` §7), plus an `apply*` scan whose window overran
+into neighbouring functions. The mechanism each time: **reading part of a thing and reporting it as
+the whole.** Recorded as a standing hazard, not an apology.
+
+### ★ But the pattern IS expressible, and `HttpBlock` demonstrates it
+
+Output-only `processBulk` sources exist in-tree: `BasicFileIo`, `ClockSource`, **`HttpBlock`**,
+`NullSources`, `WavBlocks`, `TagMonitors`. **`HttpBlock` is the one that drains an external
+asynchronous resource**, which is structurally what a radio does:
+
+```cpp
+[[nodiscard]] work::Status processBulk(OutputSpanLike auto& outSpan) {
+    if (outSpan.empty()) { return work::Status::INSUFFICIENT_OUTPUT_ITEMS; }
+    _reader.poll(/* non-blocking */ …);
+    outSpan.publish(nSamplesToPublish);          // publish what arrived — possibly 0
+    return finished ? work::Status::DONE : work::Status::OK;
+}
+```
+
+Four properties, and they are the whole specification for a device source:
+
+1. **Never blocks** — polls, publishes what is there, returns.
+2. **Publishes a variable count**, including zero, without treating that as an error.
+3. **Guards on `outSpan.empty()`** with `INSUFFICIENT_OUTPUT_ITEMS` rather than spinning.
+4. **`start()` is one line** and defers the slow work (`readAsync`).
+
+So the `work()`-override pattern in all three device sources is **convention, not necessity.** That
+is the finding that makes a conformant replacement worth designing rather than merely wished for.
