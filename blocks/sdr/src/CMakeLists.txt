@@ -129,3 +129,13 @@ add_custom_command(
     ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_ops> -P
     ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
   COMMENT "womm: verifying womm_ops links no transmit path")
+
+# womm: PoC — the two-node flowgraph with NO device in the loop. Separates "gr4 works"
+# from "gr4 works with our radios", which nothing else here does.
+add_executable(womm_poc_nograph womm_poc_nograph.cpp)
+target_link_libraries(
+  womm_poc_nograph
+  PRIVATE gnuradio-options
+          gnuradio-core
+          gnuradio-blocklib-core
+          gr-testing)

@@ -2771,3 +2771,78 @@ defers its reader?" — a question with an obvious answer that needs no architec
 
 **Note this does NOT explain the correlated overflow residual** (§10.4), which survives warm-up long
 after any start() has returned.
+
+### 10.30 ★ THE THREE GATING ISSUES — answered, and none is a show-stopper
+
+Owner's proposal: do not modify the in-tree `SoapySource` (fixing an in-tree block only invites
+complaint); instead wrap Soapy/UHD in a **conformant, properly threaded Block** of our own. Three
+gating issues were named first.
+
+#### Gate 1 — how many other blocks are conformant vs phoned-in?
+
+Audited **all 20 in-tree blocks that implement `start()`**, on the two axes the owner named: does
+`start()` block, and is the block **actually schedulable** (real `processOne`/`processBulk`) rather
+than bypassing the scheduler with a side-channel thread.
+
+| verdict | count | blocks |
+|---|---|---|
+| **conformant** — fast `start()`, real processing | **17 / 20 (85 %)** | ClockSource, SignalGenerator, FunctionGenerator, Trigger, BasicFileIo, WavBlocks, HttpBlock, PythonBlock, ExpressionBlocks, Delay, SavitzkyGolayFilter, SvdDenoiser, FrequencyEstimator, ImChartMonitor, PerformanceMonitor, TagMonitors, **AudioBlocks** |
+| **not schedulable** — `work()` override + side-channel IO thread | 3 | `RTL2832Source`, `SoapySink`, `SoapySource` |
+| **also blocks in `start()`** | 2 | `SoapySink`, `SoapySource` |
+
+**Not a show-stopper — the opposite.** 85 % are fully conformant, and every non-conformant block is
+an SDR block. The rot is confined to exactly the corner we care about.
+
+**★ And `AudioBlocks.hpp` is the proof that a *device* block can be conformant:** it runs an IO
+thread **and** implements `processBulk`, so it is genuinely schedulable. That is the pattern for the
+replacement block — not a novel design to invent, an in-tree precedent to copy.
+
+`SoapySource` by contrast overrides `work()` wholesale and returns `{requestedWork, 0UZ, OK}`
+forever (§10.24): its IO thread writes to the output port directly, bypassing the scheduler's flow
+control entirely. It is not schedulable in any meaningful sense.
+
+#### Gate 2 — GUI status: weak, and the weakest of the three
+
+From `UI_OPTIONS.md`, unchanged this session:
+
+| option | status | Mac | licence |
+|---|---|---|---|
+| in-tree `Drawable` | **implemented but barely populated** — one consumer, `ImChartMonitor`, which draws to a **console** | yes, builds today | MIT |
+| `-studio` + `-control-plane` | self-described "active prototype" | **unknown** | GPL-3.0 / MIT |
+| `opendigitizer` | working but FAIR's, not a gr4 UI | **no** | LGPL-3.0 |
+
+No ImGui/OpenGL/GLFW dependency is wired into this tree's `CMakeLists.txt` at all. **There is no
+usable GUI today**, and the prior session's recommendation stands: evaluate `-control-plane` first
+because it is MIT, small (24 commits), and the only unknown that matters.
+
+#### Gate 3 — ✅ the two-node flowgraph works without a radio
+
+`blocks/sdr/src/womm_poc_nograph.cpp` — `ConstantSource` → `CountingSink`, no device, no Soapy, no UHD:
+
+```
+two-node graph, no device: 1000000 samples in 0.108 s  (9.29 MS/s)
+start-up did NOT block — graph ran immediately
+real 0.80
+```
+
+**Separates "gr4 works" from "gr4 works with our radios" — which nothing else in this project did.**
+It also confirms the owner's thought experiment empirically: with no device block, nothing blocks,
+because `ConstantSource::start()` returns immediately and Soapy is never consulted.
+
+### Where the replacement block would start
+
+Owner asked the status of the Soapy this block was built against versus current SoapyUHD. Established
+in §10.26: our vendored **SoapySDR `1551ea0d`** and **SoapyUHD `2a5d381f`** are **byte-identical to
+pothosware master** — nothing stale, nothing forked. So a new block would target current upstream
+Soapy, and the work is entirely on the gr4 side.
+
+**Shape of a conformant SDR block**, from `AudioBlocks` (schedulable device block) and `HttpBlock`
+(non-blocking `start()`):
+
+1. `start()` returns immediately — device init deferred, as `HttpBlock` defers via `readAsync`.
+2. Implement **`processBulk`**, not a `work()` override, so the scheduler actually drives it.
+3. Keep the IO thread for the device, as `AudioBlocks` does — the thread is fine; bypassing
+   `processBulk` is not.
+
+**This does not close S2-3.** The correlated overflow residual (§10.4) survives warm-up and is
+unexplained by any of the above.
