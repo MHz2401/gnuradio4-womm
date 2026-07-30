@@ -2902,3 +2902,70 @@ maximum rate, not about an unexplained defect.
 **Caveat, stated plainly:** n = 2 at each of the two clean points. Zero is a strong signal and it is
 the first time the control has ever passed, but it is not yet a repeated result at the standard
 §10.2 set for throughput.
+
+### 10.32 ⚠⚠ EVERY NUMBER IN PHASE 10 WAS MEASURED ON A HEAVILY LOADED MACHINE
+
+Owner, 2026-07-30: *"What time were you testing it? I have big CPU-intensive batch jobs running late
+at night, such as now."*
+
+**Checked, and the answer is bad.** At 05:49 on 2026-07-30:
+
+```
+load averages: 35.02 31.84 30.50          (24 cores: 16 P + 8 E)
+ 65.3 %  airportd
+ 51.7 %  Python 3.14
+ 43.2 %  Python 3.14
+ 42.0 %  Python 3.14
+ 37.6 %  Python 3.14
+ 35.2 %  Python 3.14
+ 33.4 %  PyCharm
+```
+
+**Load average ~35 against 24 cores — the machine was oversubscribed by roughly 50 %.**
+
+Timestamps of this session's measurement artefacts: `mt_1.txt` 01:56, `mt_5.txt` 02:00,
+`mp_31FE7A2.txt` 02:03, `mtc_1.txt` 02:05, and everything since, through 05:49. **All of Phase 10
+was measured inside the owner's overnight batch window.** Machine load was never checked — not once,
+in any run.
+
+### What this invalidates
+
+**Every measured number in Phase 10 is provisional and must be re-taken on a quiet machine:**
+
+| § | figure | status |
+|---|---|---|
+| 10.2 | MT ratio mean 0.9928, range 0.9891-0.9966 (n=7) | **suspect** |
+| 10.1, 10.3 | MP 9-14 overflows/radio; MT fewer-but-lower-ratio contradiction | **suspect** |
+| 10.4 | the "correlated residual" | **suspect — and see below** |
+| 10.18 | bring-up 3.35-3.70 s / 9.89-10.20 s | **suspect** |
+| 10.19 | device args 25.3 → 7.5 mean overflow | **suspect** |
+| 10.28 | `start()` 2.17-2.39 s per radio | **duration suspect; the serialisation itself is structural** |
+| 10.31 | zero overflow at 61.44 MS/s | **suspect — though a clean result under load is the least fragile direction** |
+
+### ★ And it is the most likely explanation of the thing I called a mystery
+
+§10.4 reported four radios overflowing in **perfect lockstep** and I attributed it to "one host-side
+cause stalling all four read loops together". **A competing batch load at ~1.5× core count is
+exactly that cause.** It delays the scheduler's worker threads and the IO threads simultaneously, so
+every radio overflows in the same window. §10.31 already reframed this as a margin problem; the
+missing term was that the margin was being eaten by something outside gr4 entirely.
+
+This also fits §10.3's contradiction — MT showing fewer overflows but a lower sample ratio — since a
+host-clock-windowed ratio is directly sensitive to scheduling delay in a way an event counter is not.
+
+### What survives
+
+**The structural findings are unaffected**, because they come from reading code and diffing trees,
+not from timing:
+
+- the serial `forEachBlock` start and the absence of any barrier (§10.20, §10.28)
+- GR 3.10's `thread::barrier` + thread-per-block (§10.23)
+- vendored Soapy byte-identical to pothosware (§10.26)
+- the block-conformance audit, 17/20 (§10.30)
+- `SoapySource::work()` returning 0 samples forever (§10.24)
+- H-1's mechanism, `stream_now` vs `SOAPY_SDR_HAS_TIME` (§10.27)
+- the separated repos being unchanged (§10.25)
+
+**Rule earned, and it belongs with the instrument lessons:** *check machine load before believing a
+timing measurement, and record it alongside the result.* Every harness here reports rates and counts
+and none reports the load average it ran under. That is now the obvious gap.
