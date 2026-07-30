@@ -2704,3 +2704,70 @@ is `reinitDevice()`, before either happens.
 **Measured answer to "is each device block RUNNING as a separate thread when it executes
 `SoapySource::start()`?" — No.** All four ran on thread 68432, the scheduler's calling thread. The
 per-radio IO threads are created *from inside* `start()`, after the blocking work is done.
+
+### 10.29 ⚠ MY LIST WAS TRUNCATED — and the conclusion changes, but not the way it looks
+
+**My error.** §10.28's "at least ten in-tree blocks implement `start()`" came from a list piped
+through `head`, which cut 20 results to 10 and dropped the SDR ones. The owner reasonably inferred
+from the absence that `SoapySource` was not a real in-tree block. **The premise was mine and it was
+wrong.** Full list: 20 files, including `SoapySource.hpp` (#16), `SoapySink.hpp` (#15) and
+`RTL2832Source.hpp` (#12).
+
+**`SoapySource` is a `Block`, and it is in-tree upstream:**
+
+```cpp
+GR_REGISTER_BLOCK("gr::blocks::sdr::SoapySource",     …, ([T], 1UZ), […])
+GR_REGISTER_BLOCK("gr::blocks::sdr::SoapyDualSource", …, ([T], 2UZ), […])
+struct SoapySource : Block<SoapySource<T, nPorts>> {        // SoapySource.hpp:27
+```
+
+Registered twice, reflectable via `GR_MAKE_REFLECTABLE`, and **identical in the actively maintained
+`gnuradio4-blocks`** (`struct SoapySource : Block<…>` at its `:29`). It is not an out-of-tree
+throwaway.
+
+### But the owner's DESIGN criticism is correct, and `HttpBlock` proves it
+
+The comparison the owner drew is exactly right. `blocks/http/include/gnuradio-4.0/http/HttpBlock.hpp`:
+
+```cpp
+void openReader() {
+    auto readerExp = fileio::readAsync(url.value, readerConfig());   // ← async
+    …
+    _reader = std::move(readerExp.value());
+}
+
+void start() { openReader(); }        // :103 — returns immediately
+```
+
+**`HttpBlock::start()` does not block on I/O.** It hands the slow work to an async reader and
+returns. That is the in-tree convention.
+
+**`SoapySource::start()` does the opposite**: it calls `reinitDevice()` synchronously and occupies
+the caller's thread for **2.17-2.39 s** (measured, §10.28) before returning.
+
+### The synthesis — this narrows the fix considerably
+
+Both things are true at once, and neither cancels the other:
+
+| | status |
+|---|---|
+| the serial traversal in `SchedulerBase::start()` | **real, measured, core, device-agnostic** (§10.28) |
+| `SoapySource` being a legitimate registered in-tree Block | **true** |
+| `SoapySource::start()` blocking ~2.2 s | **a violation of the convention every other in-tree block follows** |
+
+The serial traversal only *bites* because one block breaks the convention. So there are two possible
+fix sites, and they are very different in cost:
+
+1. **Make `SoapySource::start()` async, as `HttpBlock` does** — move `reinitDevice()` onto a thread
+   and let the four radios initialise concurrently. **Block-level, no core change, matches in-tree
+   convention, and is the fix upstream would most plausibly accept.**
+2. **Add a start barrier to the core traversal**, the GR 3.10 `scheduler_tpb` approach (§10.23).
+   Core change, larger, and still wanted eventually for the *rendezvous* property — but not needed
+   merely to stop serial bring-up.
+
+**(1) is the cheap one and should be tried first.** It also reframes the mailing-list question from
+"your scheduler is wrong" to "should `SoapySource::start()` defer device init the way `HttpBlock`
+defers its reader?" — a question with an obvious answer that needs no architectural agreement.
+
+**Note this does NOT explain the correlated overflow residual** (§10.4), which survives warm-up long
+after any start() has returned.
