@@ -2564,3 +2564,76 @@ it (§10.22).
 So the honest framing for a mailing-list question is not "your code is broken" but "has anyone run a
 multi-channel device here?" — and the evidence says no. That also predicts deflection (B), *"what do
 you mean?"*, is a genuine question rather than a brush-off.
+
+### 10.27 ⚠ CORRECTIONS — H-1 defined, "timed" made precise, and the serial start IS the production path
+
+Owner's review of §10.26 raised four things. Three are corrections to me.
+
+#### (a) I was NOT saying two devices in two blocks is impossible. It works.
+
+If the §10.26 table implied that, it was badly framed. **Four `SoapySource` blocks, four devices, one
+`gr::Graph`, has run all session at 122 MS/s** (§10.2). Two devices in two blocks is not the problem
+and never was.
+
+The structure, stated the owner's way and confirmed in our code:
+
+| case | shape | status in gr4 |
+|---|---|---|
+| two devices, both RX | **two blocks** | works — this is what every harness here does |
+| n channels of one device | **n ports on one block** | works *now* — but see H-1 below |
+| TX and RX on one device | **two blocks** (a source and a sink) | mechanism exists — `DeviceRegistry` counts `pendingUsers` per device kwargs and defers activation until all have registered (`SoapyRaiiWrapper.hpp:204-265`), with an explicit check "expected at most 2 (one Source + one Sink)" |
+
+That last row answers the owner's open question about two blocks on one device: gr4 has a
+**per-device rendezvous**. What it has no equivalent of is a **cross-device** one — which is exactly
+the gap GR 3.10's `thread::barrier` fills (§10.23).
+
+#### (b) H-1, defined — it was referenced without definition
+
+`DRIFT.md` Category H, found 2026-07-27. **`SoapySource::start()` called `_rxStream.activate()` with
+no arguments.** In SoapySDR that is `flags = 0`, and `SoapyUHDDevice.cpp:277` turns that into:
+
+```cpp
+cmd.stream_now = (flags & SOAPY_SDR_HAS_TIME) == 0;      // flags==0  ->  stream_now = TRUE
+cmd.time_spec  = uhd::time_spec_t::from_ticks(timeNs, 1e9);
+```
+
+UHD then refuses the command when the streamer covers more than one channel:
+
+> `RuntimeError: Invalid recv stream command - stream now on multiple channels in a single streamer will fail to time align.`
+
+Reproduced outside gr4 with `SoapySDRUtil --channels="0,1"`, so it is a UHD contract, not a gr4 bug —
+but gr4 had no way to satisfy it, which is the defect.
+
+#### (c) "timed" was imprecise. Here is what it actually means.
+
+Not a vague property. It means **`SOAPY_SDR_HAS_TIME` must be set in the activate flags**, which is
+the only thing that makes SoapyUHD set `cmd.stream_now = false` and honour `cmd.time_spec`.
+
+And the owner is right that "which clock" is a separate question. `time_spec` is
+`from_ticks(timeNs, 1e9)` on the **device's** clock — whatever `time_source` was set to (internal,
+external, or GPSDO). So the flag selects *timed vs immediate*; `time_source` selects *whose time*.
+Two independent choices, and §10.26 blurred them.
+
+#### (d) ★ The serial start is the PRODUCTION path, not test-harness code
+
+The owner's hypothesis — that it might be harness code not running in a real flowgraph — is worth
+settling, and the answer is no. The full chain, every link cited:
+
+| # | code | file:line |
+|---|---|---|
+| 1 | `sched.runAndWait()` → `this->changeStateTo(RUNNING)` | `Scheduler.hpp:528` |
+| 2 | `if constexpr (requires(TDerived& d) { d.start(); }) { … invokeLifecycleMethod(&TDerived::start, …); }` | `LifeCycle.hpp:241-243` |
+| 3 | `SchedulerBase::start()` → `std::lock_guard lock(_executionOrderMutex);` then `graph::forEachBlock<TransparentBlockGroup>(*_graph, [](auto& block){ … block->changeStateTo(lifecycle::RUNNING); })` | `Scheduler.hpp:647`, `:660-675` |
+| 4 | same lifecycle hook, now per block → `SoapySource::start()` | `LifeCycle.hpp:241` |
+| 5 | → `reinitDevice()` (**~3.4-3.7 s**, §10.18) → `registerActivation` → `_rxStream.activate(...)` | `SoapySource.hpp:195-266` |
+
+`LifeCycle.hpp:128` states the contract in words: *"`start()` when transitioning from INITIALISED to
+RUNNING"*.
+
+**So every `runAndWait()` on every real graph goes through this.** In the DAG framing: connect →
+validate → initialise → establish connections all happen earlier; this is the final "start the
+runnable objects" stage, and it is the one that is serial. There is no separate production path.
+
+**This is the snippet set to put in front of the mailing list**, and it makes the question concrete:
+not "is something wrong" but "step 3 walks blocks serially and each `SoapySource::start()` blocks for
+~3.5 s — is that intended for multi-device graphs, and is a `scheduler_tpb`-style barrier planned?"
