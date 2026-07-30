@@ -2846,3 +2846,59 @@ Soapy, and the work is entirely on the gr4 side.
 
 **This does not close S2-3.** The correlated overflow residual (§10.4) survives warm-up and is
 unexplained by any of the above.
+
+### 10.31 ★★★ THE CONTROL PASSES — a quiet baseline exists, and S2-3 is unblocked
+
+The owner's question — *"we're seeing overflow markers with no operations at all, just a radio tuned
+to an arbitrary frequency?"* — prompted checking a combination that had never been run. Device args
+had only ever been tested at **full** rate, and reduced rate only **without** device args. The
+diagonal was empty.
+
+**Filled in. It is zero.**
+
+| aggregate rate | `num_recv_frames=1024` in device args | total overflow, whole run |
+|---|---|---|
+| 122.88 MS/s | no | 20, 25, 32, 24 |
+| 122.88 MS/s | **yes** | 3, 4, 17, 6 |
+| 61.44 MS/s | no | ~1-2 per window |
+| **61.44 MS/s** | **yes** | **0, 0** |
+| **30.72 MS/s** | **yes** | **0, 0** |
+
+**Four radios, eight channels, 61.44 MS/s aggregate, tuned and streaming, no operations: zero
+overflow, zero timeouts, zero of everything. Twice.**
+
+### This reframes the residual — it is not an unexplained host stall
+
+§10.4 and `OPERATIONS.md` A-3 described a "correlated residual" that survived every intervention and
+implied one mysterious host-side event stalling all four read loops together. **That framing was
+wrong, or at least badly overstated.** The behaviour is coherent and ordinary:
+
+- it is **rate-dependent** — halving the rate removes it;
+- it is **buffer-depth-dependent** — `num_recv_frames` in the right place removes it at 61.44 and
+  cuts it ~3× at 122.88;
+- the **correlation across radios** is what you would expect from a *shared host resource* (one
+  scheduler, one thread pool) rather than four independent device faults — and it disappears
+  entirely once there is enough margin.
+
+So: the host cannot always keep up at the hardware ceiling, deeper buffering absorbs the shortfall,
+and at half rate with correct buffering the margin is large enough that it never occurs. No mystery
+required.
+
+**What remains true:** at 122.88 MS/s the baseline is still not clean (3-17 per run), so the
+tier-1 criterion cannot be evaluated *at the ceiling*. That is now a statement about margin at
+maximum rate, not about an unexplained defect.
+
+### Consequences
+
+1. **S2-3 is unblocked.** There is now an operating point where the null control passes, which is the
+   precondition the procedure requires (`OPERATIONS.md`). Operations under load can be measured at
+   **61.44 MS/s aggregate with `num_recv_frames=1024` in device args**, and any event attributed
+   there is genuinely attributable.
+2. **`OPERATIONS.md` A-3 is downgraded** from "unresolved, blocking" to "insufficient margin at
+   maximum rate, mitigated by buffer depth".
+3. **The right place for `num_recv_frames` is now load-bearing**, not a curiosity — it is the
+   difference between a measurable baseline and an unmeasurable one.
+
+**Caveat, stated plainly:** n = 2 at each of the two clean points. Zero is a strong signal and it is
+the first time the control has ever passed, but it is not yet a repeated result at the standard
+§10.2 set for throughput.
