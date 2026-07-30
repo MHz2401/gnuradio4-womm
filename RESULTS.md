@@ -3187,3 +3187,65 @@ internal rather than by announcing itself.
 **Why this matters here:** it reframes `set_time_unknown_pps()` as the *normal* call for any external
 timing device, not an exceptional or fallback one — which is consistent with `HANDOFF.md` C-9 finding
 it to be the multi-device primitive, and with §10.34's "(B) is neutral" result.
+
+### 10.36 ⚠ CORRECTION TO §10.35 Q7 — "unknown" means the PPS EDGE is unknown, not the source
+
+I recorded the owner's explanation of `UNKNOWN_PPS` in §10.35 Q7 without checking it against the
+manufacturer's own documentation, which the timing rule ranks as authoritative source (2)/(3).
+**UHD's header states a different meaning**, and it is unambiguous.
+
+`/opt/homebrew/include/uhd/usrp/multi_usrp.hpp:302-318`, verbatim:
+
+> *Synchronize the times across all motherboards in this configuration.*
+> *Use this method to sync the times when **the edge of the PPS is unknown**.*
+> *Ex: Host machine is not attached to serial port of GPSDO and can therefore not query the GPSDO for
+> the PPS edge.*
+> *This is a 2-step process, and will take at most 2 seconds to complete.*
+> - *Step1: wait for the last pps time to transition to catch the edge*
+> - *Step2: set the time at the next pps (synchronous for all boards)*
+
+**"Unknown" qualifies the host's knowledge of the PPS edge phase, not the identity of the timing
+source.** The contrast is with `set_time_next_pps`, whose own doc warns (`:284-288`): *"Make sure to
+not call this shortly before the next PPS edge… timekeepers could be unsynchronized in time by
+exactly one second. If in doubt, use set_time_unknown_pps()."*
+
+So the two calls differ by **what the host knows about where it is in the second**:
+
+| call | precondition | cost |
+|---|---|---|
+| `set_time_next_pps` | host knows it is *not* near an edge — e.g. it can query a GPSDO over serial | immediate, but risks a **1 s** misalignment |
+| `set_time_unknown_pps` | host does **not** know the edge phase | 2-step, **≤ 2 s** |
+
+### What survives from the owner's account, and what does not
+
+**Does not:** the reading of "unknown" as a pronoun for an unnamed source. UHD's example is explicitly
+about a *GPSDO* — a named, built-in device — being unqueryable because the host lacks a serial
+connection to it. The word is about phase knowledge, not identity.
+
+**Does survive, and is worth keeping:** the underlying physics. External clock and GPS devices do
+connect over SMA carrying analogue timing signals with no embedded identifier, and that is *why* the
+host cannot know the edge phase without a separate side-channel — which is precisely UHD's serial-port
+example. The owner's mechanism is right; it explains the naming rather than being the naming.
+
+**And the owner's other hypothesis — that someone renamed "unknown" to "external" — does not hold.**
+They are different axes, and both apply to us simultaneously:
+
+| axis | our value | what it says |
+|---|---|---|
+| `time_source` | `external` | *where the PPS comes from* — the Octoclock, over SMA |
+| `setHardwareTime(what)` | `UNKNOWN_PPS` | *what the host knows about the edge phase* — nothing |
+
+`listTimeSources()` forwards to UHD's `get_time_sources(0)` and the device answers `none, internal,
+external, gpsdo`. **`unknown` has never been among them.**
+
+### Which also corrects a prior-session line
+
+`RESULTS.md:1170` states *"the only PPS string in `libuhdSupport.so` is `UNKNOWN_PPS`, **which is a
+time_source value**, not a stream argument."* The second half is right; **the first half is wrong** —
+it is the `what` argument to `setHardwareTime`, not a `time_source` value. That line is upstream of
+the "the whole sync path is plumbing, not capability" conclusion, which is unaffected, but the
+misattribution should not propagate.
+
+**Confirms C-9 with its mechanism now cited from the vendor rather than inferred:** `UNKNOWN_PPS` is
+the multi-device primitive *because* step 1 waits for a transition, which is what puts every radio on
+the same edge. And UHD's "≤ 2 seconds" is the manufacturer's own figure for the cost §10.18 measured.
