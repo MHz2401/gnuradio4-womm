@@ -128,3 +128,68 @@ identifying case by case against the UHD API rather than from the shim alone.
 **Rule for this project:** before relying on a Soapy parameter, find its line in
 `vendor/SoapyUHD/SoapyUHDDevice.cpp` and read what it becomes. It is a 1200-line file and the answer
 is always there.
+
+---
+
+## 7 · ★ THE DRIVER DECLARES ITS OWN PARAMETERS — stop guessing, ask it
+
+Found 2026-07-30, at the owner's suggestion to look at pothosware's documentation. **The useful
+answer is not documentation at all.**
+
+SoapySDR's *written* documentation for stream args is one line — `Device.hpp:257`:
+
+> *"Recommended keys to use in the args dictionary: - "WIRE" - format of the samples between device
+> and host"*
+
+**One key.** Nothing about `num_recv_frames`, `recv_frame_size`, or anything else. But SoapySDR also
+defines **runtime introspection**, and SoapyUHD implements it:
+
+| API | `Device.hpp` | SoapyUHD |
+|---|---|---|
+| `getStreamArgsInfo(direction, channel)` | `:216` | **`:137`** |
+| `getFrequencyArgsInfo(direction, channel)` | `:872` | **`:728`** |
+| `getSettingInfo()` / `getSettingInfo(dir, ch)` | `:1212`, `:1260` | present |
+
+Each returns `ArgInfo` — key, name, description, units, type, and valid options. **The driver
+describes its own vocabulary.**
+
+### What SoapyUHD declares as RX stream args (`:137-190`)
+
+| key | type | description (its words) | note |
+|---|---|---|---|
+| `spp` | INT | "The number of samples per packet." | **this is the real samples-per-read knob** |
+| `WIRE` | STRING | "The format of samples over the bus." | options `sc8`, `sc16` |
+| `peak` | FLOAT | "The peak value for scaling in complex byte mode." | |
+| `recv_buff_size` | INT | "The size of the kernel socket buffer in bytes." | ⚠ **pushed only `if (_isNetworkDevice)`** — not offered for USB |
+| `recv_frame_size` | INT | "The size an individual datagram or frame in bytes." | |
+
+### ★ Three corrections this produces
+
+1. **`num_recv_frames` is NOT a stream arg — the driver never declares it.** That is why putting it
+   there is inert (`RESULTS.md` §10.15): SoapyUHD does not handle it at that layer at all. It reaches
+   UHD only through **device args**. Measurement and declaration now agree.
+2. **`spp` is the knob `max_chunk_size` pretends to be.** `SoapySource`'s `max_chunk_size` is
+   documented "max samples per read" and reaches nothing (§10.35), while `spp` — declared, typed,
+   RX-relevant — **is set by nothing in this tree.**
+3. **`recv_buff_size` is network-only.** On a USB B210 it is not even offered, so anyone copying a
+   network-device recipe gets a silently ignored setting.
+
+### And the tune args, which we have never used (`:728-752`)
+
+`SoapySource` has a `tune_args` field. Nothing in this project sets it. SoapyUHD declares two:
+
+| key | type | description (its words) |
+|---|---|---|
+| `mode_n` | STRING | "Whether the daughterboard tune code should use an **integer N divider or fractional N divider**" — options `integer`, `fractional` |
+| `int_n_step` | FLOAT | "The step between valid tunable frequencies when using integer-N tuning" |
+
+Both are marked *"not supported for all devices"*. Integer-N tuning is the classic B2xx measure for
+deterministic tuning and reduced fractional-N spurs — **relevant to this project and untried.**
+
+### The rule this replaces guesswork with
+
+**Before setting any Soapy parameter, ask the driver whether it declares it.** A one-off probe over
+`getStreamArgsInfo` / `getFrequencyArgsInfo` / `getSettingInfo` on an attached device enumerates the
+real vocabulary, with types and valid options, from the code that will actually consume it. That is
+read-only introspection — a query, not an experiment — and it is the definitive answer to "which
+parameters exist and where do they go".

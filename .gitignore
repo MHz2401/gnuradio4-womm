@@ -1,3 +1,95 @@
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# .gitignore TEMPLATE (my template, .gnuradio template separately below these)
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+# - - - - - - - - - - - - - - - - -
+#  OS/IDE CRUFT
+# --- OS JUNK (The "Dang Things") ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# BEGIN: local project-specific
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# # SEE ALSO: [STANDARD DATA DIR STRUCTURE]
+# # OLD CONFIG FILES: jsonl saved only by exception
+# *.jsonl
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# END: local project-specific
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# --- EDITORS & IDEs (The "Tool-du-Jour" Protection) ---
+# JetBrains (PyCharm, IntelliJ)
+.idea/
+.idea/*
+.idea.bak/
+.idea.bak/*
+*.iml
+*.iws
+*.ipr
+
+# VS Code & Derivatives (Cursor, Windsurf, etc.)
+.vscode/
+*.code-workspace
+.history/
+.cursor/
+.cursorrules
+.windsurfrules
+
+# --- Antigravity & LOCAL CONFIG ---
+# Prevent local configs/secrets from leaking
+*.local
+*.env
+.env*
+antigravity_config.json
+antigravity.conf
+config_local.py
+secrets.yaml
+
+# Other Editors (Sublime, TextMate, Atom)
+*.sublime-project
+*.sublime-workspace
+.tm_properties
+.atom/
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# DATA STANDARDS & PRACTICES:
+# 0. Avoid sensitive data in project dirs; use .git/info/exclude to hide moderately-sensitive dirs
+# 1. .csv is for data that's (A) 'small' and (B) 'not sensitive', generally not .gitigore'd
+# 2. The (project-relative) data/ dirs:
+#    1. Show structure := "'known' to a `DataDirs` Enum" in git, but not the (large) data / parquet files
+#    2. By convention, temporary data (examining a file's contents etc) should use  `_TMP_*/` subdir
+#    3. When creating data/ subdirs 'known' to a  `DataDirs` Enum, include a .gitkeep
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# --- DATA DIRECTORY RULES ---
+# 1. Ignore EVERYTHING inside data/
+data/**/*
+
+# 2. But do NOT ignore directories (so the structure is kept)
+!data/**/
+
+# 3. And do NOT ignore the .gitkeep files (so empty dirs are tracked)
+!data/**/.gitkeep
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# GR4 .gitignore below:
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# 
 # Build Files
 **/CMakeFiles/
 **/CMakeCache.txt
