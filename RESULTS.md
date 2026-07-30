@@ -3091,3 +3091,99 @@ decaying tail of *my own previous run* — a 12 s gap is far too short for a 1-m
 overflows per run. Only **61.44 MS/s** has ever produced zero (§10.31). So the tier-1 criterion
 remains evaluable at half rate and not at the ceiling — and that conclusion now survives on a
 machine an order of magnitude quieter than the one that produced §10.4.
+
+### 10.35 ⚠ `max_chunk_size` DOES NOT DO WHAT IT SAYS — and other answers from source
+
+Hardware testing **stopped** at the owner's direction: unknown parameter mappings are not something to
+resolve empirically on four B210s. Everything below is read from source.
+
+#### ★ The find: `max_chunk_size` is a setting that lies
+
+```cpp
+Annotated<std::uint32_t, "max_chunk_size", Doc<"max samples per read (ideally N x 512)">, Visible, …>
+    max_chunk_size = 512U << 4U;                                     // SoapySource.hpp:68
+```
+
+Documented as *"max samples per read"*, marked `Visible` (so a UI would show it) — **and the read
+loop does not use it.** Both read paths size their buffer from a hard-coded constant:
+
+```cpp
+constexpr std::size_t kReadSize = 512UZ * 16UZ;        // :317 single-port, :407 multi-port
+std::vector<T> readBuf(kReadSize);
+_rxStream.readStream(flags, time_ns, max_time_out_us, std::span<T>(readBuf));
+```
+
+`max_chunk_size` appears **once** in the whole file (`:986`), computing the *update rate of the ppm
+estimator* — and only when `ppm_estimator_cutoff > 0`, which defaults to 0. **So in the default
+configuration it does nothing at all.**
+
+**Not ours.** Identical in upstream `gnuradio4-blocks` (`kReadSize` at its `:221`/`:228`, same three
+`max_chunk_size` occurrences). Every harness here sets it; none of them changes the read size.
+
+**Applies to the B210 as much as anything else** — it is device-independent, because it never reaches
+the device.
+
+#### Answers to the owner's questions
+
+**Q1 — reason not to leave `num_recv_frames` unset?** No good one. UHD picks a default when it is 0.
+Our evidence for overriding it (§10.19, ~3× fewer overflows) was taken on a machine at load average
+35 (§10.32) and is suspect. Under "guess fewer parameters", **unset is the defensible default** until
+it is re-measured on a quiet machine with a reason.
+
+**Q2 — do not set both sample rate and MCR.** ⚠ **We set both.** `applyClockConfig()` calls
+`setMasterClockRate()` (`:764`) and `applySampleRate()` calls `setSampleRate()` (`:783`), on every
+start. The owner reports Ettus recommends setting **one**, and the sample rate. This is a live
+defect in our configuration, not just a style point, and §10.11's 16 MHz surprise is the same
+mechanism seen from the other side.
+
+**Q3 — where is `$WOMM_DEV_ARGS` defined?** **Nowhere.** There is no file that defines the `WOMM_*`
+variables; they are ad-hoc `getenv()` calls in the harnesses. 29 of them exist. **19 are documented
+nowhere at all**, including `WOMM_DEV_ARGS`, `WOMM_MCR`, `WOMM_FREQ`, `WOMM_GAIN`, `WOMM_SERIAL`,
+`WOMM_CHUNK`, `WOMM_START_OFFSET` and both barrier variables. Only 10 appear in `OPERATIONS.md`.
+`scripts/env.sh` defines only `WOMM_ROOT` and `WOMM_PREFIX`.
+
+**Q4 — documentation for `stream_args`?** This, in full:
+
+```cpp
+Annotated<std::string, "stream_args", Doc<"SoapySDR stream kwargs (comma-separated key=value)">>
+```
+
+It does not say which keys are valid, that they land in `uhd::stream_args_t.args` via
+`get_rx_stream`, or that transport parameters put there are **inert** (§10.15). `tune_args` and
+`device_settings` have equally thin one-liners.
+
+**Q5 — `max_chunk_size`:** see above. It corresponds to nothing on the device.
+
+**Q6 — valid `clock_source` / `time_source` values.** The Doc strings say *"e.g. internal, external,
+gpsdo"* and *"e.g. external, gpsdo"* — "e.g.", not an enumeration. **The device is authoritative**,
+and reports them: `uhd_usrp_probe` on our B210s gives
+
+```
+Time sources:  none, internal, external, gpsdo
+Clock sources: internal, external, gpsdo
+```
+
+Note `time_source` accepts **`none`** and `clock_source` does not. Nothing validates these in
+`SoapySource`; an invalid string reaches `set_clock_source` and the existing comment at `:673` warns
+that selecting a reference which is not physically present **does not error** — the device just
+free-runs.
+
+#### Q7 — what "UNKNOWN" means, recorded because it is easy to misread
+
+Owner, 2026-07-30. **`UNKNOWN_PPS` does not mean "the PPS state is unknown". It means the timing
+source is unnamed** — "unknown" is used as a *pronoun*.
+
+External clock and GPS devices such as the Octoclock-G connect through the same SMA connectors as
+antennas and carry **analogue timing signals**, not digital coded packets. The radio can tell that a
+PPS is present, that a 10 MHz reference is present, and that GPS data is embedded in those signals
+(passed straight through from the satellite constellation) — but **the clock device deliberately does
+not stamp an identifier onto those signals**, because anything added could be mistaken for noise.
+Hence the convention: the source is real and detected, merely *unnamed*.
+
+By contrast **`gpsdo` means a built-in GPS-disciplined oscillator** — bolted or soldered to the
+motherboard. It carries no name information either, for the same reason; it is distinguished by being
+internal rather than by announcing itself.
+
+**Why this matters here:** it reframes `set_time_unknown_pps()` as the *normal* call for any external
+timing device, not an exceptional or fallback one — which is consistent with `HANDOFF.md` C-9 finding
+it to be the multi-device primitive, and with §10.34's "(B) is neutral" result.
