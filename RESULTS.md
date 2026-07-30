@@ -2637,3 +2637,70 @@ runnable objects" stage, and it is the one that is serial. There is no separate 
 **This is the snippet set to put in front of the mailing list**, and it makes the question concrete:
 not "is something wrong" but "step 3 walks blocks serially and each `SoapySource::start()` blocks for
 ~3.5 s — is that intended for multi-device graphs, and is a `scheduler_tpb`-style barrier planned?"
+
+### 10.28 ★★ MEASURED, NOT INFERRED — `start()` is serial, on one thread, and it blocks
+
+Owner's challenge: the claim that the serial start is "part of GR4" came from the same source that
+also claimed UHD cannot run multithreaded and that ingest caps at ~46 MS/s — **both of which were
+wrong, and both of which were configuration errors.** So the claim deserves a measurement, not a
+code read. Correct, and §10.27 argued from structure without measuring.
+
+**Instrumented `SoapySource::start()` with wall-clock entry/exit and thread id (`WOMM_TIME_START=1`),
+four B210s, one `gr::Graph`, `womm_mt_test`:**
+
+| # | ENTER | EXIT | elapsed | thread |
+|---|---|---|---|---|
+| 1 | `…446521000` | `…839430000` | **2.393 s** | 68432 |
+| 2 | `…839463000` | `…010343000` | **2.171 s** | 68432 |
+| 3 | `…010358000` | `…226462000` | **2.216 s** | 68432 |
+| 4 | `…226475000` | `…509799000` | **2.283 s** | 68432 |
+
+**All four on the same thread. Intervals disjoint and back-to-back** — each EXIT is followed by the
+next ENTER within 13-33 µs. Total ~9.06 s of serial bring-up.
+
+**So it is serial, it is on the caller's thread, and each call blocks for ~2.2 s.** Not an artefact
+of reading `Scheduler.hpp`.
+
+### It is NOT device code, and NOT a demo — which makes it worse, not better
+
+The owner's alternative hypothesis was that this might be somebody's example flowgraph or a
+test/demo hard-coded for RTL-SDR rather than core machinery. Checked:
+
+| file | mentions of `rtl` / `soapy` / `sdr` / `usrp` / `uhd` / `hackrf` |
+|---|---|
+| `Scheduler.hpp` | **0** |
+| `LifeCycle.hpp` | **0** |
+
+**The start path is entirely device-agnostic.** It is the generic block-start traversal in the core
+scheduler: `SchedulerBase::start()` walks every block and invokes the optional `start()` lifecycle
+method that `LifeCycle.hpp` documents. It knows nothing about radios.
+
+**The defect is therefore not "device start code is serial". It is that the core traversal is serial
+and `start()` is permitted to block.** Any block with a slow `start()` serialises the whole graph.
+At least ten in-tree blocks implement `start()` — `ClockSource`, `AudioBlocks`, `SignalGenerator`,
+`HttpBlock`, `PythonBlock`, `BasicFileIo` and more — so this is not an SDR-only exposure.
+
+### Answering the thought experiment: signal generator → GUI scope, no device
+
+**Nothing blocks.** Two `samp_rate`/`sine_freq` settings, a signal source and a scope: the traversal
+still visits every block and still calls `start()` where implemented, but `SignalGenerator::start()`
+does not talk to hardware and returns immediately. Soapy is never involved — it is not "asked" and
+does not need to know there are no devices, because nothing in the scheduler references it. The
+graph runs normally.
+
+That is the point: the serial traversal is invisible until some block's `start()` takes seconds. A
+radio is simply the first block anyone has plugged in that does.
+
+### And the owner's distinction between "RUNNING" and "data flowing" holds
+
+`changeStateTo(RUNNING)` does two things: it sets the block's state, **and** it invokes the
+lifecycle `start()` hook (`LifeCycle.hpp:241-243`). The state change is the cheap abstraction the
+owner describes; the hook is where the blocking happens. In `SoapySource` the actual data flow does
+**not** begin at `start()` either — `start()` ends by launching an IO thread
+(`defaultIoPool()->execute([this]{ ioReadLoop(); })`), and *that* thread is where samples move. So
+"all blocks RUNNING" and "data flowing" are indeed distinct, and the ~2.2 s is spent in neither: it
+is `reinitDevice()`, before either happens.
+
+**Measured answer to "is each device block RUNNING as a separate thread when it executes
+`SoapySource::start()`?" — No.** All four ran on thread 68432, the scheduler's calling thread. The
+per-radio IO threads are created *from inside* `start()`, after the blocking work is done.

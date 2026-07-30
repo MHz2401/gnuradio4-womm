@@ -197,6 +197,27 @@ Tested with RTL-SDR and LimeSDR drivers.)">;
     }
 
     void start() {
+        // Is start() actually serialised across blocks, or does it only look that way
+        // from reading Scheduler.hpp? Entry/exit on the wall clock plus the thread id
+        // settles it: overlapping intervals on distinct threads means parallel, and
+        // disjoint intervals on one thread means serial. WOMM_TIME_START=1 to enable.
+        const auto _startEntryNs = detail::wallClockNs();
+        const bool _timeStart    = std::getenv("WOMM_TIME_START") != nullptr;
+        if (_timeStart) {
+            std::println(stderr, "[start] {} ENTER  t={}.{:09d}  thread={}", this->name.value, _startEntryNs / 1'000'000'000UL, _startEntryNs % 1'000'000'000UL, std::hash<std::thread::id>{}(std::this_thread::get_id()) % 100000UL);
+        }
+        struct StartExitLogger {
+            const SoapySource* self;
+            std::uint64_t      entryNs;
+            bool               enabled;
+            ~StartExitLogger() {
+                if (enabled) {
+                    const auto exitNs = detail::wallClockNs();
+                    std::println(stderr, "[start] {} EXIT   t={}.{:09d}  elapsed={:.3f} s  thread={}", self->name.value, exitNs / 1'000'000'000UL, exitNs % 1'000'000'000UL, static_cast<double>(exitNs - entryNs) * 1e-9, std::hash<std::thread::id>{}(std::this_thread::get_id()) % 100000UL);
+                }
+            }
+        } _exitLogger{this, _startEntryNs, _timeStart};
+
         _overflowCount.store(0U, std::memory_order_relaxed);
         _fragmentCount.store(0U, std::memory_order_relaxed);
         _timeoutCount.store(0U, std::memory_order_relaxed);
