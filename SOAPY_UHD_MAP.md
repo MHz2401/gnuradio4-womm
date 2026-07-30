@@ -1,7 +1,7 @@
 # SOAPY → UHD parameter map — extracted from the driver, not remembered
 
 **Why this exists.** The owner (7-8 years with UHD, Soapy and GR): *the Soapy parameters map to UHD,
-but for this driver it is often done in a confusing and ambiguous way. Some are nice (auto-sync) but
+but it is often done in a confusing and ambiguous way. Some are nice (auto-sync) but
 not well-documented, most parameters have different names than the UHD equivalent — lumping two
 things into one, or the reverse — and **in a few cases name X is used in both UHD and Soapy but
 means a different thing in each.***
@@ -10,6 +10,14 @@ That is exactly the class of error this project keeps paying for. Two examples f
 alone: `num_recv_frames` set in **stream args** where it is inert, when it only works in **device
 args** (`RESULTS.md` §10.15); and `master_clock_rate` set through a *setter* after device creation,
 where UHD has already chosen 16 MHz, rather than as a device arg (§10.11).
+
+⚠ **Attribution, corrected by the owner 2026-07-30:** *SoapyUHD does a pretty good job of matching
+UHD — it is the **universal Soapy driver** that is confusing.* That is the right target. The lumping
+documented below is largely **forced on SoapyUHD by the SoapySDR universal API**, which must cover
+RTL-SDR, HackRF, LimeSDR and UHD through one interface. `setHardwareTime(timeNs, what)` has a single
+universal signature; mapping five distinct UHD time calls onto it is SoapyUHD making the best of a
+constrained API, not SoapyUHD inventing confusion. Read the tables as *where the universal
+abstraction loses information*, not as a criticism of the UHD shim.
 
 Everything below is **extracted from `vendor/SoapyUHD/SoapyUHDDevice.cpp`** — the copy we build,
 byte-identical to pothosware master (§10.26). Line numbers are that file. It is not from memory and

@@ -3037,3 +3037,57 @@ is the same wrong-place trap that made `num_recv_frames` inert** (§10.15); (C) 
 mixed with other changes.
 
 All three must be re-run **on a quiet machine, with load average recorded per run** (§10.32).
+
+### 10.34 ★ QUIETER MACHINE — (A) helps, (B) is neutral, and (C) is CATASTROPHIC
+
+Owner cleared the machine (load average **3.52** before the matrix, against **35.02** during Phase
+10's original runs). Full rate, null control, `WOMM_EXTCLK=1`, two runs each, total overflow per run:
+
+| # | configuration | runs | load pre-run |
+|---|---|---|---|
+| 1 | baseline — MCR 30.72 / 15.36, `num_recv_frames` in **stream** args | 20, 48 | 10.5, 10.1 |
+| 2 | + `num_recv_frames=1024` in **device** args | 17, 10 | 12.4, 13.1 |
+| 3 | **(A)** 15.000000 MS/s, MCR 30.00, + device args | **10, 3** | 15.0, 14.6 |
+| 4 | **(B)** `master_clock_rate` as a **device arg**, rate requested separately | 7, 13 | 4.8, 10.5 |
+| 5 | **(C)** + `recv_frame_size=1024` | **3616, 3683** | 8.9, 4.9 |
+
+#### ⚠ (C) `recv_frame_size=1024` is catastrophic at this rate — three orders of magnitude worse
+
+**3616 and 3683 overflows against 3-20 for every other configuration.** Not noise, not load: the
+effect is ~300× and both runs agree.
+
+`recv_frame_size` is **bytes per USB frame**. At 1024 bytes that is 128 `complex<float>` samples per
+frame, so at 15 MS/s per channel the host must service roughly **117 000 frames per second per
+channel**. The per-frame overhead dominates.
+
+**This does not contradict Ettus** — their known-issues text recommends it *"if there are issues with
+performance or stability"*, which is guidance for a constrained host or a low rate. **At 15 MS/s per
+channel on this machine it is strongly counter-indicated**, and that is worth recording precisely
+because it came from the manual and would otherwise be adopted on authority.
+
+#### (A) is the best configuration measured
+
+**15.000000 MS/s with MCR 30.000000 — 10 and 3 overflows** — the lowest pair at full-ish rate, and
+consistent with the owner's reasoning that running at the absolute limit (15.36 = MCR/2 exactly,
+decimation 2) invites trouble while a little headroom costs almost nothing. **0.6 % less throughput
+for a large reduction in overflow.**
+
+#### (B) is neutral here, but the mechanism was worth testing
+
+Passing `master_clock_rate=30e6` in **device args** and requesting the sample rate separately gave
+7 and 13 — indistinguishable from (A) at this sample size. It does **not** reproduce the §10.11
+failure where `master_clock_rate = 0` let UHD pick 16 MHz at device-creation time, because the device
+arg is present at `make()`. So the mechanism works as documented; it simply does not beat setting it
+explicitly.
+
+### ⚠ Two honest caveats
+
+**My load readings were partly self-inflicted.** `load_pre` values of 10-15 in configs 1-3 are the
+decaying tail of *my own previous run* — a 12 s gap is far too short for a 1-minute average. Configs
+4 and 5 used a 75 s settle and show `load_pre` of 4.8-10.5, closer to the machine's true idle. The
+(C) result is immune to this: no plausible load explains 300×.
+
+**Full rate is still not clean, even quiet.** The best configuration measured (A) gives 3-10
+overflows per run. Only **61.44 MS/s** has ever produced zero (§10.31). So the tier-1 criterion
+remains evaluable at half rate and not at the ceiling — and that conclusion now survives on a
+machine an order of magnitude quieter than the one that produced §10.4.
