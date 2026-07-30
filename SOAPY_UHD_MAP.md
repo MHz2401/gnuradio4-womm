@@ -153,26 +153,44 @@ defines **runtime introspection**, and SoapyUHD implements it:
 Each returns `ArgInfo` — key, name, description, units, type, and valid options. **The driver
 describes its own vocabulary.**
 
-### What SoapyUHD declares as RX stream args (`:137-190`)
+### What SoapyUHD declares as RX stream args (`:137-222`)
 
 | key | type | description (its words) | note |
 |---|---|---|---|
-| `spp` | INT | "The number of samples per packet." | **this is the real samples-per-read knob** |
+| `spp` | INT | "The number of samples per packet." | the real samples-per-read knob |
 | `WIRE` | STRING | "The format of samples over the bus." | options `sc8`, `sc16` |
 | `peak` | FLOAT | "The peak value for scaling in complex byte mode." | |
-| `recv_buff_size` | INT | "The size of the kernel socket buffer in bytes." | ⚠ **pushed only `if (_isNetworkDevice)`** — not offered for USB |
+| `recv_buff_size` | INT | "The size of the kernel socket buffer in bytes." | ⚠ pushed only `if (_isNetworkDevice)` — **not offered for USB** |
 | `recv_frame_size` | INT | "The size an individual datagram or frame in bytes." | |
+| `num_recv_frames` | INT | "The number of available buffers." | **declared** |
+| `fullscale` | FLOAT | "Specifies the full-scale amplitude when using floats." | |
+| `underflow_policy` | STRING | TX only | `next_burst`, `next_packet` |
 
-### ★ Three corrections this produces
+### ⚠ DECLARED IS NOT HONOURED — the sharper and worse finding
 
-1. **`num_recv_frames` is NOT a stream arg — the driver never declares it.** That is why putting it
-   there is inert (`RESULTS.md` §10.15): SoapyUHD does not handle it at that layer at all. It reaches
-   UHD only through **device args**. Measurement and declaration now agree.
-2. **`spp` is the knob `max_chunk_size` pretends to be.** `SoapySource`'s `max_chunk_size` is
-   documented "max samples per read" and reaches nothing (§10.35), while `spp` — declared, typed,
-   RX-relevant — **is set by nothing in this tree.**
-3. **`recv_buff_size` is network-only.** On a USB B210 it is not even offered, so anyone copying a
-   network-device recipe gets a silently ignored setting.
+**`num_recv_frames` IS a declared stream arg** (`:191-198`). An earlier draft of this section said it
+was not; that was **my error, from reading only the first half of the function** — `RESULTS.md`
+§10.15's measurement stands, but the explanation I gave for it was wrong.
+
+The correct statement is worse:
+
+> **SoapyUHD advertises `num_recv_frames` as a valid stream arg, and for a USB device setting it
+> there has no effect** (`RESULTS.md` §10.15, §10.19 — measured inert in stream args, ~3× fewer
+> overflows in device args).
+
+`getStreamArgsInfo` is **metadata for a UI**, not a promise of behaviour. What decides the outcome is
+`setupStream` (`:225`), which does `stream_args.args = kwargsToDict(args)` and hands it to
+`get_rx_stream()`. By then the USB transport was already built during `multi_usrp::make()`, so the
+value arrives too late. **A parameter the driver tells you is valid, accepted without error, and
+silently ignored** — the worst of the three failure modes.
+
+**Two corrections that do survive:**
+
+1. **`spp` is the knob `max_chunk_size` pretends to be.** `SoapySource`'s `max_chunk_size` is
+   documented "max samples per read" and reaches nothing (§10.35); `spp` is declared, typed, and
+   **set by nothing in this tree**.
+2. **`recv_buff_size` is network-only** — on a USB B210 it is not even offered, so a network-device
+   recipe copied across is silently ignored.
 
 ### And the tune args, which we have never used (`:728-752`)
 
@@ -188,7 +206,8 @@ deterministic tuning and reduced fractional-N spurs — **relevant to this proje
 
 ### The rule this replaces guesswork with
 
-**Before setting any Soapy parameter, ask the driver whether it declares it.** A one-off probe over
+**Ask the driver what it declares — then verify the value actually took effect.** Declaration and
+behaviour are different things, as `num_recv_frames` shows. A one-off probe over
 `getStreamArgsInfo` / `getFrequencyArgsInfo` / `getSettingInfo` on an attached device enumerates the
 real vocabulary, with types and valid options, from the code that will actually consume it. That is
 read-only introspection — a query, not an experiment — and it is the definitive answer to "which
