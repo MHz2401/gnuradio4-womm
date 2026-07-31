@@ -3453,3 +3453,47 @@ test's own logic.
 **What this changes for Studio:** live data streaming to a browser is **not** the broken thing —
 that path passes. What is unproven is **session restart**, which Studio does whenever you stop and
 re-run a graph. Serious, but narrower and more tractable than "WebSockets are broken on macOS".
+
+### 10.41 ★ THE SERVER RUNS AND REFLECTS OUR BLOCKS
+
+`GR4CP_PORT=18099 ./build/gr4cp_server`, ~6 s to start:
+
+```
+GET /healthz   ->  {"ok":true}
+GET /blocks    ->  [{"category":"good","id":"good::cout_sink<float32>",
+                     "inputs":[{"cardinality_kind":"fixed","current_port_count":1,
+                                "max_port_count":1,"min_port_count":1,"name":"in",
+                                "type":"float32"}], …
+```
+
+**The catalogue is live reflection of *our* gnuradio4 build** — port names, types, cardinality
+(fixed vs dynamic), and parameter defaults. Not a static list.
+
+So the full chain works on macOS: **our tree → `cmake --install` → control plane → HTTP → block
+catalogue with reflected metadata.**
+
+### ⚠ Two things to know before leaving it running
+
+**1. It binds `0.0.0.0`, hard-coded.** `src/main.cpp:57` is `server.listen("0.0.0.0", port)` — a
+literal. `GR4CP_PORT` changes the port; **nothing changes the interface.** The API is
+**unauthenticated** and `POST /sessions` creates and runs flowgraphs, so anything that can reach the
+port can run a graph on this machine. Options: firewall the port, or change the literal to
+`127.0.0.1` in a fork — a one-line change, and the natural first commit if the control plane is
+forked.
+
+**2. Session restart may hang** (§10.40). Studio restarts a session whenever a graph is stopped and
+re-run, so that is the path most likely to bite in normal use.
+
+### Where the UI question now stands
+
+| step | status |
+|---|---|
+| gnuradio4 installs on macOS | ✅ §10.39 |
+| control plane builds | ✅ §10.39 |
+| control plane tests | ✅ 131/137; restart/rebind hangs §10.40 |
+| **server runs and reflects our blocks** | ✅ **this section** |
+| Studio's own build (Node/React) | **untried** |
+| Studio driving a live graph end to end | **untried** |
+
+`UI_OPTIONS.md`'s gate — *"if the C++ control plane does not build and run against our macOS GR4
+install, Studio is moot"* — **is passed.** Studio is now worth trying rather than speculative.
