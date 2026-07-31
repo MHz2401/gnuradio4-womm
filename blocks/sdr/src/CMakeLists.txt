@@ -139,3 +139,14 @@ target_link_libraries(
           gnuradio-core
           gnuradio-blocklib-core
           gr-testing)
+
+# womm: a sine wave you can watch, with no radio and no GUI. ImChartMonitor<T,false>
+# (ConsoleDebugSink) renders an ASCII chart from processBulk, so no UI host is needed.
+add_executable(womm_scope_demo womm_scope_demo.cpp)
+target_link_libraries(
+  womm_scope_demo
+  PRIVATE gnuradio-options
+          gnuradio-core
+          gnuradio-blocklib-core
+          gr-basic
+          gr-testing)

@@ -46,6 +46,8 @@ Everything below is **unique to the `-womm` fork**. Everything not listed is ups
 | `blocks/sdr/src/womm_rx_hold.cpp` | hold-open multi-channel RX; capture, tag and liveness modes |
 | `blocks/sdr/src/womm_bmax.cpp` | ballast/deadline probe: radios plus synthetic load |
 | `blocks/sdr/src/womm_mt_test.cpp` | single-process N-radio streaming benchmark (MT vs MP) |
+| `blocks/sdr/src/womm_scope_demo.cpp` | **a sine wave you can watch** — ASCII chart in the terminal, no radio, no GUI |
+| `blocks/sdr/src/womm_poc_nograph.cpp` | two-node flowgraph, no device — separates "gr4 works" from "gr4 works with our radios". **Plots nothing** |
 | `blocks/sdr/src/womm_ops.cpp` | **S2-3: injects one named operation under load, with a null control** |
 | `blocks/sdr/src/womm_b210_sweep.cpp` | single-radio rate sweep |
 | `blocks/sdr/src/assert_no_tx.cmake` | **RX-only gate** — asserts no transmit symbol in the linked binary |
