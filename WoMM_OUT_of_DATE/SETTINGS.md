@@ -1,5 +1,18 @@
 # SETTINGS — every name/value in the pristine harnesses, for owner categorisation
 
+
+## DEPRECATED BY CHOOOSING SoapyUHD 
+
+**NOTE:** not all parameters in this doc were resolved, and final test had 
+'scary' results from a hardware-breaking perspective.  AT THIS TIME we're working
+from the assumption that SoapyUHD resolves remaining ambiguities.  Expect a 
+successor to this document for SoapyUHD if needed. 
+
+
+
+
+### Original Text
+
 Extracted from `75f9bb3` — the harnesses **as they stood at the start of the 2026-07-29 session**,
 before any change made that day. These encode experiments that were learned one at a time, and the
 reasons are not all recorded.

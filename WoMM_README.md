@@ -1,5 +1,14 @@
 # WoMM README — what is ours, and where
 
+## **CAUTION: INCLUDES OUT-of-DATE MATERIAL**
+
+If you don't see a document that's listed here, it may be in the `WoMM_OUT_of_DATE` directory,
+which indicates significant out-of-date content, however, material in the `WoMM_OUT_of_DATE` directory
+is there instead of the trash because it may have valuable history.   
+
+### DOC: (continued)
+
+
 Everything below is **unique to the `-womm` fork**. Everything not listed is upstream
 `gnuradio/gnuradio4` and behaves as upstream does. `womm` = **Works On My Machine**.
 
