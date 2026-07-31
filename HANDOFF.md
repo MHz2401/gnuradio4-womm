@@ -191,7 +191,7 @@ in `RESULTS.md` Phase 9, `DRIFT.md` Category H; milestones in `SPRINT.md`.
 |---|---|---|
 | C-1 | **Two-channel receive works** — first time in this project | Owner read the front-panel LEDs on all four units (A/B frontends, `TX/RX`) — out-of-band evidence no software defect can fake — agreeing with independent per-channel counters |
 | C-2 | **It had never worked, for two reasons, both fixed** | H-1: `start()` called `activate()` bare; UHD refuses "stream now" on a multi-channel streamer, reproduced **outside gr4**. H-2: `setHardwareTime` passed `nullptr` → `strlen(nullptr)` → SIGSEGV, unreachable until H-1 was fixed |
-| C-3 | **4 radios, 8 channels, 122.88 MS/s, ratio 1.0000** | 43 s; CPU ~53 % user / ~18 % sys / **~29 % idle**. ⚠ **"zero overflows" WITHDRAWN 2026-07-29** — no counter existed; it was inferred from the ratio. Measured with one, the same topology overflows 9–14 times per radio. The *rate* stands. `RESULTS.md` §10.1 |
+| C-3 | **4 radios, 8 channels, 122.88 MS/s, ratio 1.0000** | 43 s; CPU ~53 % user / ~18 % sys / **~29 % idle**. ⚠ **withdrawal itself RETRACTED 2026-07-30** — the counter and the `rx_overflow` tag both predate this session, and per-second tag observation was a working instrument. **C-3 stands.** `RESULTS.md` §10.33 |
 | C-4 | **A B2xx does 30.72 MS/s aggregate on two channels** (15.36 per channel) | UHD's own refusals; Nyquist relation to the sample clock, per owner |
 | C-5 | **All four radios share one PPS epoch** | worst offset **39.8 ms** against a one-second discriminator |
 | C-6 | **Content verified — transmitted comb on all 8 channels** | 13 pickets each, spacing 40001.3–40001.4 Hz vs 40000 transmitted, fit rms **3.2–3.5 Hz** |
@@ -292,6 +292,44 @@ Recorded because each cost real time.
    cabling. Poll to a deadline.
 9. **A banner that printed a compiled default while the radio used a runtime value.** Caught in a
    dry run. Print what was actually requested, not what the constant says.
+
+---
+
+## ★ SESSION 2026-07-29/30 — WHERE IT ACTUALLY STANDS
+
+**The UI stack is proven end to end on this machine.** Owner ran a flowgraph in GR4 Studio
+repeatedly, edited it live, no hang. That is the first working GUI in this project.
+
+    our gnuradio4  →  cmake --install  →  control-plane (MIT)  →  HTTP/WS  →  Studio (GPL, separate process)
+
+New forks, all on `womm/m2ultra-wip`: `gnuradio4-studio-womm`, `gnuradio4-blocks-womm`,
+`gnuradio4-control-plane-womm`. The read-only clone at `../gnuradio4-control-plane` is **safe to
+delete**. Install prefix: `../gr4-install` (from `cmake --install build-fixed`).
+
+### ⚠ EVERY PHASE-10 MEASUREMENT IS PROVISIONAL
+
+Taken 01:00–05:49 inside the owner's overnight batch window, at **load average 35 on 24 cores**. No
+harness records load. `RESULTS.md` §10.32. **Re-take on a quiet machine before building on any of
+it.** The code-reading findings are unaffected.
+
+### The Soapy block is abandoned, and why
+
+`SoapySource` cannot be trusted parameter by parameter — `tune_args` and `ppm_tag_threshold` are
+declared and never read; `max_chunk_size` is documented "max samples per read" and reaches nothing;
+transport keys are accepted where the driver *declares* them valid and silently ignored on USB; 12
+settings are start-only and a runtime change is staged then discarded without warning. Full inventory
+in **`PARAMS.md`**; the Soapy↔UHD mapping, with the traps, in **`SOAPY_UHD_MAP.md`**. Replacement
+design in **`DESIGN_UhdSource.md`**.
+
+### Standing hazard this session earned
+
+**Reading part of a thing and reporting it as the whole.** Four times: a `head`-truncated block list,
+a half-read `getStreamArgsInfo`, an `apply*` scan whose window overran, and a file-level grep that
+attributed `AudioSink`'s `processBulk` to `AudioSource`. Each produced a confident wrong conclusion.
+**Check completeness explicitly — count, then verify the count.**
+
+And: **check the provenance of the tree you are reasoning about.** I diagnosed a control-plane clone
+seven weeks stale while the owner ran current code (§10.45).
 
 ---
 
