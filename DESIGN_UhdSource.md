@@ -121,20 +121,72 @@ serial `forEachBlock` traversal in upstream's `SchedulerBase::start()` prevents 
 change.** It does not provide the *rendezvous* that GR 3.10's `thread::barrier` gives (§10.23); that
 remains open and is a separate piece of work.
 
-## 8 · Data path and threading
+## 8 · Data path — ★ REVISED, modelled on GR 3.10's `usrp_source`
 
-One IO thread per device, exactly as now — the thread was never the problem. The change is where the
-samples go:
+Owner: *mechanisms for high-performance streaming can probably be modelled on GR 3.10 blocks.*
+Correct, and it overturns the ring design this section previously proposed.
 
-| | today | proposed |
+**`gr-uhd/lib/usrp_source_impl.cc:614-623` — the reference implementation:**
+
+```cpp
+int usrp_source_impl::try_work(int noutput_items, …, gr_vector_void_star& output_items) {
+    // In order to allow for low-latency:
+    // We receive all available packets without timeout.
+    size_t num_samps = _rx_stream->recv(
+        output_items, noutput_items, _metadata, _recv_timeout, _recv_one_packet);
+```
+
+**`recv()` writes straight into the flowgraph's own output buffers.** No IO thread. No intermediate
+ring. **No copy.** The scheduler's thread does the receive, inside `work()`.
+
+| | `SoapySource` today | my earlier proposal | **GR 3.10, adopted** |
+|---|---|---|---|
+| receive runs on | IO thread | IO thread | **scheduler thread, in `processBulk`** |
+| samples land in | port writer, behind the scheduler | SPSC ring, then copied | **the output span, directly** |
+| copies | 1 | 2 | **0** |
+
+### The four behaviours that make it work, all from the reference
+
+| condition | GR 3.10 | line |
 |---|---|---|
-| IO thread | writes **directly** to `out.streamWriter()` | writes to a **lock-free SPSC ring** owned by the block |
-| scheduler | calls `work()`, which returns 0 samples forever | calls `processBulk`, which **drains the ring** |
-| back-pressure | none — the port is written behind the scheduler | natural: the ring fills, the read loop sees it and counts an overflow |
+| **timeout** | `return 0` — *"its ok to timeout, perhaps the user is doing finite streaming"* | `:649-651` |
+| **overflow** | set `_tag_now`, count, rate-limited log, publish an async message, `return -1` → **`work()` retries**, up to `_num_overflow_retries = 10` | `:653-674` |
+| **other error** | warn and `return num_samps` — keep whatever arrived | `:676-678` |
+| **normal** | if `_tag_now`, emit `rx_time` / `rx_rate` / `rx_freq` at the current sample offset | `:628-646` |
 
-**Open question (§12):** whether the ring is a second copy or whether `processBulk` can hand the IO
-thread an output span to fill directly. The second is faster and harder; the first is obviously
-correct. **Start with the first.**
+### ★ The element I had missed entirely: re-tag after overflow
+
+`_tag_now = true` is set **on overflow** (`:654`), as well as at start (`:84`, `:108`) and on an
+explicit `tag` command. So **the chunk following any discontinuity carries a fresh time/rate/frequency
+tag.**
+
+That is exactly the owner's description of correct behaviour — a beginning-of-stream tag carrying
+time and sample position, re-anchored whenever the sample-to-time mapping breaks. **A consumer can
+therefore always map samples to device time**, which is the whole point of the disciplined set-up.
+`SoapySource` publishes a bare `rx_overflow` flag and never re-anchors.
+
+### Latency posture
+
+`_recv_timeout = 0.1 s`, `_recv_one_packet = true` (`:37-38`) — return as soon as one packet is
+available rather than waiting to fill the buffer. Settable at runtime via `set_recv_timeout()`.
+
+### Consequence for the block
+
+`processBulk(OutputSpanLike auto& outSpan)` becomes thin, and `start()` still returns immediately —
+device bring-up remains on a thread (§7), but **steady-state streaming has no thread of its own**:
+
+```
+processBulk(outSpan):
+    if outSpan.empty()            -> INSUFFICIENT_OUTPUT_ITEMS
+    n = recv(outSpan.data(), outSpan.size(), md, timeout, one_packet)
+    on timeout                    -> publish(0); return OK
+    on overflow                   -> count; tagNow = true; retry (bounded); publish(0); return OK
+    if tagNow                     -> publish rx_time / rx_rate / rx_freq at offset 0; tagNow = false
+    publish(n); return OK
+```
+
+**This is simpler, faster and better-precedented than the ring**, and it removes §12's first open
+question entirely.
 
 ## 9 · Instrumentation — carry over, it is the one part that is proven
 
@@ -163,7 +215,7 @@ reverted by this** — the Category I instrumentation stays useful for both.
 
 ## 12 · Open questions — to settle before writing code
 
-1. **Ring vs. direct span fill** (§8). Correctness first, performance second.
+1. ~~Ring vs. direct span fill~~ — **settled by GR 3.10's `usrp_source`: recv directly into the output span, no ring, no IO thread in steady state (§8).**
 2. **Does `processBulk` see enough of the output span** to publish a full device chunk, or does the
    scheduler's sizing force fragmentation? Determines the ring's shape.
 3. **Which of `SoapySource`'s remaining features are wanted at all** — DC blocker, ppm estimator,
