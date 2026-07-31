@@ -3547,3 +3547,62 @@ point; **not a blocker and not a runtime exposure.**
 
 **Still untried:** Studio actually driving a live graph through the control plane end to end — which
 is where §10.42's prompt and §10.40's restart path both sit.
+
+### 10.44 ★★★ THE HANG DIAGNOSED — a shutdown deadlock in `WebSocketBridge`, not the firewall
+
+Owner ran the suite interactively and got **further than I did** — 12 tests passed, including
+`RestartInvalidatesOldWebsocketBindingAndNewRouteUsesNewGeneration` **in 114 ms**, the exact test
+that hung for me. It then stopped at `StopClosesExistingWebsocketConnectionsDeterministically`.
+
+**Three runs, three different hang points** — `BrowserFacing…` under ctest, `RestartInvalidates…` in
+my process, `StopClosesExisting…` in his. A moving hang point is a **race**, not a prompt.
+
+Sampled the live hung process (`sample <pid>`), and the stack is unambiguous:
+
+| thread | where it is blocked |
+|---|---|
+| **main** | `HttpServer::Impl::join_connection_threads()` → `std::thread::join()` → `__ulock_wait` |
+| **connection** | `handle_connection` → `handle_websocket_upgrade` → **`WebSocketBridge::run()`** → `std::thread::join()` → `__ulock_wait` |
+| **forwarder** | **`WebSocketBridge::forward(…)`** → `websocket::stream::read_some(…)` → `socket_ops::sync_recv` → **`poll()`** |
+
+**A three-level join chain ending in a blocking read nobody will satisfy.** Main waits for the
+connection thread; the connection thread waits inside `WebSocketBridge::run()` for the forwarder; the
+forwarder sits in a **synchronous** `read_some` on a peer that has stopped sending.
+
+**The defect: shutdown joins the threads without first cancelling or closing the socket the forwarder
+is blocked on.** Nothing breaks the `poll()`. The test is named
+`StopClosesExistingWebsocketConnections**Deterministically**`, which is precisely the property that
+does not hold.
+
+#### Both of my hypotheses are withdrawn
+
+- **§10.40 "port release and re-bind on macOS"** — wrong. The rebinding tests **pass** (114 ms, 99 ms,
+  123 ms in the owner's run).
+- **§10.42 "the macOS firewall prompt"** — wrong, and it was my own reasoning from circumstantial
+  evidence (firewall on, binaries unsigned and unlisted). The accept succeeded, the upgrade
+  succeeded, frames were proxied; the deadlock is **after** all of that, in shutdown. The owner
+  reports no dialog. **The firewall state I measured was true and irrelevant** — a fact that fitted
+  the symptom without causing it.
+
+That is three wrong explanations for one symptom in a row, each plausible, each dismissed only by a
+better measurement. **Sampling the live process took seconds and settled what an hour of inference
+did not.**
+
+#### Why it plausibly bites macOS harder
+
+Closing a file descriptor that another thread is blocked in `poll()` on is **not portable**: on Linux
+it will often wake the poller with an error; on macOS/BSD the behaviour is unspecified and frequently
+does **not** wake it. A shutdown path that relies on close-to-interrupt therefore works in Linux CI
+and deadlocks here. **Hypothesis, consistent with the stack, not verified** — and it barely matters,
+because on this evidence nothing closes the socket at all before the join.
+
+#### Consequence for Studio
+
+**This is a real blocker for the intended workflow.** Studio stops and restarts sessions routinely,
+and stopping a session with a live browser WebSocket is exactly the path that deadlocks. Expect the
+server to wedge on the first stop, holding its port — the "first stop-and-rerun is the interesting
+moment" prediction was right for the wrong reason.
+
+**Fixable, and narrowly:** cancel or close the bridge's sockets *before* joining, or use asynchronous
+reads with a cancellation signal instead of `sync_recv`. It is a shutdown-ordering bug in one class,
+not an architectural problem.
