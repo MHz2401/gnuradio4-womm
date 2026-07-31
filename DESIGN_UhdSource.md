@@ -71,7 +71,7 @@ GR_REGISTER_BLOCK("gr::blocks::uhd::UhdDualSource", gr::blocks::uhd::UhdSource, 
 template<typename T, std::size_t nPorts = 1UZ>
 struct UhdSource : gr::Block<UhdSource<T, nPorts>> {
     using Description = Doc<"Receive-only UHD source. start() returns immediately; "
-                            "device bring-up runs on an IO thread and processBulk drains it.">;
+                            "device bring-up runs on a thread, then processBulk receives directly.">;
     …ports… …settings… GR_MAKE_REFLECTABLE(…) …private state…
     void start(); void stop();
     [[nodiscard]] work::Status processBulk(OutputSpanLike auto& outSpan);
@@ -106,8 +106,8 @@ free-run (F-4); antenna against `listAntennas()`; gain against `getGainRange()`.
 
 ```
 start()          → spawn init thread, return immediately          (≪1 ms)
-init thread      → make device, apply settings, activate stream, then run the read loop
-processBulk()    → drain the ring; if not ready, publish 0 and return OK
+init thread      → make device, apply settings, activate stream, mark ready, exit
+processBulk()    → recv() straight into the output span; if not ready, publish 0 and return OK
 stop()           → request stop, join, deactivate, release
 ```
 
@@ -121,7 +121,7 @@ serial `forEachBlock` traversal in upstream's `SchedulerBase::start()` prevents 
 change.** It does not provide the *rendezvous* that GR 3.10's `thread::barrier` gives (§10.23); that
 remains open and is a separate piece of work.
 
-## 8 · Data path — ★ REVISED, modelled on GR 3.10's `usrp_source`
+## 8 · Data path — GR 3.10's mechanisms, GR4's threading
 
 Owner: *mechanisms for high-performance streaming can probably be modelled on GR 3.10 blocks.*
 Correct, and it overturns the ring design this section previously proposed.
@@ -170,23 +170,52 @@ therefore always map samples to device time**, which is the whole point of the d
 `_recv_timeout = 0.1 s`, `_recv_one_packet = true` (`:37-38`) — return as soon as one packet is
 available rather than waiting to fill the buffer. Settable at runtime via `set_recv_timeout()`.
 
-### Consequence for the block
+### ⚠ BUT — owner's caution, and it is decisive
 
-`processBulk(OutputSpanLike auto& outSpan)` becomes thin, and `start()` still returns immediately —
-device bring-up remains on a thread (§7), but **steady-state streaming has no thread of its own**:
+*"Revising the design to the GR 3.10 model may result in effectively building GR 3.20 rather than
+GR4."*
+
+**Correct, and it invalidates a straight port.** GR 3.10 can `recv()` into the output buffer and
+block for `_recv_timeout` because of **thread-per-block**: that block owns its thread
+(`scheduler_tpb`, §10.23), so blocking costs only its own latency. **GR4 has a worker pool.**
+Blocking inside `processBulk` holds a *shared* worker and starves every other block assigned to it.
+The mechanism is safe in 3.10 *because of* an architecture GR4 does not have.
+
+### ★ Which explains why all four device blocks override `work()`
+
+This is not laziness, and the earlier framing of it as an anti-pattern was too glib. **GR4's
+worker-pool model offers a device source no good option:**
+
+| option | cost |
+|---|---|
+| block in `processBulk` waiting on the device | holds a shared pool worker — starves other blocks |
+| poll with ~zero timeout | burns a worker spinning — the problem `DRIFT.md` Category F already fixed once |
+| side thread writing to the port | never blocks the scheduler, but **bypasses it entirely** — what all four do |
+
+**Every in-tree device block chose the third.** That is a rational response to a real gap, not a
+failure of care.
+
+### The synthesis — take the mechanisms, not the threading model
+
+| take from GR 3.10 | leave in GR 3.10 |
+|---|---|
+| **re-tag after overflow** (`_tag_now`) so the stream is re-anchored at every discontinuity | `recv()` on the scheduler's thread |
+| **bounded retry** on overflow rather than one-shot | a 100 ms blocking timeout |
+| tags carrying **time / rate / frequency** at the sample offset | thread-per-block assumptions generally |
+| timeout treated as **normal**, publish 0, not an error | |
+
+**So the IO thread stays** — but it delivers through `processBulk` rather than writing to the port
+behind the scheduler. That is the GR4-native shape, and it is what §8 proposed before the GR 3.10
+detour:
 
 ```
-processBulk(outSpan):
-    if outSpan.empty()            -> INSUFFICIENT_OUTPUT_ITEMS
-    n = recv(outSpan.data(), outSpan.size(), md, timeout, one_packet)
-    on timeout                    -> publish(0); return OK
-    on overflow                   -> count; tagNow = true; retry (bounded); publish(0); return OK
-    if tagNow                     -> publish rx_time / rx_rate / rx_freq at offset 0; tagNow = false
-    publish(n); return OK
+IO thread          : recv() into an SPSC ring, may block freely — it is our thread
+processBulk(outSpan): drain the ring, never block, publish what is there (possibly 0)
 ```
 
-**This is simpler, faster and better-precedented than the ring**, and it removes §12's first open
-question entirely.
+**One copy, not zero** — the price of not owning a scheduler thread. Reducing it to zero would mean
+the IO thread writing into a span obtained from the port, which is what `SoapySource` does today and
+is precisely the bypass we are trying to remove. **Correctness before the copy.**
 
 ## 9 · Instrumentation — carry over, it is the one part that is proven
 
