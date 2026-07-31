@@ -29,6 +29,7 @@ Everything below is **unique to the `-womm` fork**. Everything not listed is ups
 
 | path | what it is |
 |---|---|
+| `DESIGN_UhdSource.md` | **design for a conformant GR4 block over SoapyUHD** — the replacement for the abandoned Soapy block |
 | `PARAMS.md` | **every `SoapySource` parameter: what it claims vs what it reaches** — the broken, the start-only, and what a replacement block must do |
 | `SOAPY_UHD_MAP.md` | **Soapy→UHD parameter map extracted from the driver** — the lumped names, the silent defaults, and which of device/stream/tune args a setting must go in |
 | `OPERATIONS.md` | **the tier-1 criterion as a diagnostic procedure**, plus the catalogue of anticipated causes |
