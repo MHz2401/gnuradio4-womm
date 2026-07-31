@@ -3497,3 +3497,53 @@ re-run, so that is the path most likely to bite in normal use.
 
 `UI_OPTIONS.md`'s gate — *"if the C++ control plane does not build and run against our macOS GR4
 install, Studio is moot"* — **is passed.** Studio is now worth trying rather than speculative.
+
+### 10.42 ⚠ THE HANG IS PROBABLY THE macOS FIREWALL PROMPT — my rebinding hypothesis weakened
+
+Owner: *"there's a nonzero chance that there's a one-time blocker pop-up for running a new app the
+first time, if it puts up a web socket or GUI window."*
+
+**Checked, and the evidence supports this over §10.40's rebinding hypothesis:**
+
+```
+Firewall is enabled. (State = 1)
+Automatically allow built-in signed software ENABLED.
+Automatically allow downloaded signed software ENABLED.
+--listapps | grep gr4cp   ->  (not listed)
+```
+
+The application firewall is **on**; auto-allow covers only **signed** software; our binaries are
+**locally built and unsigned**; and **none of them is in the allow list.** A first bind-and-accept by
+an unlisted unsigned binary is exactly what raises the one-time *"accept incoming network
+connections?"* dialog — and an unanswered dialog **hangs the accept**, it does not fail it.
+
+**And I cannot see or answer that dialog from here**, which makes the hang plausibly an artefact of
+how I am running the tests rather than a property of the code.
+
+**It also explains the detail §10.40 could not:** why a *different* test hung under `ctest` than in a
+single process. Each `ctest` case is a fresh process, and the prompt is per-binary-per-approval — so
+which test stalls depends on when the dialog appears, not on the test's logic. My rebinding
+hypothesis explained the neighbourhood but not that.
+
+**Discriminating test, for the owner and not for me:** run `./build/gr4cp_http_test
+--gtest_filter='*Websocket*'` in an interactive session. If a dialog appears and clicking **Allow**
+lets the suite continue, the hypothesis is confirmed and there is no macOS defect here at all.
+
+### 10.43 ★★ STUDIO BUILDS — the whole UI stack works on macOS
+
+| step | result |
+|---|---|
+| toolchain | node **v22.14.0**, npm **11.3.0** — Vite 6 needs ≥18, so **no npm update needed** |
+| `npm install` | **355 packages, 3 s** |
+| `npm run build` (`tsc -b && vite build`) | ✅ **382 modules, 1.80 s** → `dist/index.html`, 55 kB CSS, 957 kB JS |
+
+**So the entire chain is proven on this machine:** our gnuradio4 → `cmake --install` → control plane
+(builds, 131/137 tests, runs, reflects our blocks) → Studio (installs, builds).
+
+**`npm audit`: 9 vulnerabilities, 1 critical, 7 high** — but every one traces to a **dev dependency**:
+`vitest` (critical), `vite`, `postcss`, `react-router-dom`, `brace-expansion`, `js-yaml`, `picomatch`.
+These are build- and test-time packages, not shipped in the bundle. Worth an `npm audit fix` at some
+point; **not a blocker and not a runtime exposure.**
+
+**Still untried:** Studio actually driving a live graph through the control plane end to end — which
+is where §10.42's prompt and §10.40's restart path both sit.
