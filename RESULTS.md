@@ -3406,3 +3406,50 @@ with reflection skew, and nothing here points at macOS.
   process cannot stall the radio's threads.
 - **Not yet done:** running `gr4cp_server` and driving it; the WebSocket hang; whether the 6 failures
   are skew or substance; and Studio's own build, which is Node/React and untried.
+
+### 10.40 ⚠ REFINEMENT TO §10.39 — the WebSocket hang is NOT the upgrade path, and NOT egress
+
+Owner asked whether the hanging test is loopback or something that would be blocked as arbitrary
+network egress. **Checked, and it is loopback — but the useful answer came from the control.**
+
+#### Egress is ruled out at the source
+
+`test/http_api_test.cpp:766-771`:
+
+```cpp
+const auto endpoint = resolver.resolve("127.0.0.1", std::to_string(port));
+beast::get_lowest_layer(stream).connect(endpoint);
+stream.handshake("127.0.0.1:" + std::to_string(port), path);
+```
+
+**Pure loopback.** The server binds locally (`src/main.cpp:57`) and the client connects to
+`127.0.0.1`. Nothing leaves the machine, so no firewall or egress policy is involved.
+
+#### The control settles it: networking is fine
+
+| run | result |
+|---|---|
+| all **non**-WebSocket `HttpApiTest` — same bind, same loopback connect | **63 passed**, 2 failed (both catalogue) |
+| all `*Websocket*` tests, one process | **9 passed, 0 failed**, then one hang |
+
+**So binding a listening socket works, loopback connect works, HTTP works, and the WebSocket upgrade
+and frame proxying work** — nine of them, including `BrowserFacingWebsocketRouteUpgradesAndProxies…`,
+which is the very test ctest hung on. **§10.39's characterisation was too broad.**
+
+#### Where it actually hangs, and the hypothesis
+
+`HttpApiTest.RestartInvalidatesOldWebsocketBindingAndNewRouteUsesNewGeneration` — a **restart and
+re-binding** test, not an upgrade test. Its siblings in the hang neighbourhood are all of that shape:
+`RestartInvalidatesOld…Binding…`, `…BindingReleasedBeforeStartingNextGraph…`,
+`StopFailureLeaves…BindingsUnreleased…`.
+
+**Hypothesis, well-supported but not confirmed: port release and re-bind on macOS.** Releasing a
+listening socket and immediately re-binding behaves differently on macOS than Linux
+(`SO_REUSEADDR`/`TIME_WAIT` semantics), and this suite is CI-tested on Linux only. Consistent with
+the extra evidence that **under `ctest` — where each test is a fresh process — a *different* test
+hung**, which is what you would expect if the failure depends on binding state rather than on the
+test's own logic.
+
+**What this changes for Studio:** live data streaming to a browser is **not** the broken thing —
+that path passes. What is unproven is **session restart**, which Studio does whenever you stop and
+re-run a graph. Serious, but narrower and more tractable than "WebSockets are broken on macOS".
