@@ -3298,3 +3298,40 @@ Four properties, and they are the whole specification for a device source:
 
 So the `work()`-override pattern in all three device sources is **convention, not necessity.** That
 is the finding that makes a conformant replacement worth designing rather than merely wished for.
+
+### 10.38 ★ THE UI LICENCE BOUNDARY IS CLEAN — and it is better than `UI_OPTIONS.md` recorded
+
+Checked before forking, at the owner's decision to fork GRStudio.
+
+| component | licence | links into our C++? |
+|---|---|---|
+| `gnuradio4-studio` top level — the React/Vite app | **GPL-3.0** | **no** — separate process, browser or desktop |
+| `gnuradio4-studio/blocks/` — the C++ Studio blocks | **MIT**, its own `LICENSE`, © 2026 Josh Morman, Altio Labs LLC | **yes**, and it is fine |
+| `gnuradio4-control-plane` | **MIT** | yes, and it is fine |
+
+**Someone deliberately dual-licensed this.** `blocks/` carries a *separate* MIT `LICENSE` file inside
+a GPL-3.0 repository, precisely so the C++ that links into a GR4 runtime is not GPL. That is the
+distinction that matters for us:
+
+- **Forking Studio is safe.** The fork stays GPL-3.0, which costs nothing — it is a standalone
+  application, not something we link.
+- **The GPL does not reach our tree.** Studio talks to the control plane over **REST, across a
+  process boundary**. No linkage, so no propagation. Our MIT tree is unaffected.
+- **The useful C++ is MIT and may be used directly** — the Studio sink blocks (series, 2D series,
+  dataset, power spectrum, waterfall, scalar/status, audio, image) and the whole control plane.
+
+**Correction to `UI_OPTIONS.md`**, which recorded Studio as *"self-described active prototype"* and
+its licence as a caution. The prototype label is the project's own, but the state is further along
+than that reads: React 18 + Vite 6, `uPlot` plotting, browser and desktop, 40 commits, HEAD
+2026-07-12; live panels for time series, XY, power spectra, phosphor spectra, waterfall, images and
+audio; `.gr4s` documents; session lifecycle through the control plane. Control plane HEAD 2026-06-05.
+
+**And the architecture is the one this project independently arrived at.** `UI_OPTIONS.md` argued a
+separate-process control plane is *"the structural answer to GUI/radio coupling"*. That is exactly
+what Studio does — and it means the GUI cannot stall the radio thread, because it is not in the same
+process. Which bears directly on D8's *"no unanticipated overflow during… graphical display / UI
+operations"*: the coupling that criterion worries about is architecturally absent.
+
+**Still unknown, and it is the gate:** whether the control plane builds and runs on macOS. It is MIT,
+small, and auditable — `UI_OPTIONS.md`'s recommendation to evaluate it **before** Studio still holds,
+because if it does not build, Studio has nothing to talk to.
