@@ -44,7 +44,7 @@ of `AudioBlocks` — *"I would not count on it being the standard for quality"* 
 reading it (`RESULTS.md` §10.37).
 
 **Copy: `HttpBlock`** — the one in-tree block that drains an **external asynchronous resource**
-through the scheduler:
+through the scheduler. It is **in-tree and MIT**, so its patterns may be followed directly:
 
 ```cpp
 void start() { openReader(); }                       // one line; readAsync defers the work
@@ -126,7 +126,8 @@ remains open and is a separate piece of work.
 Owner: *mechanisms for high-performance streaming can probably be modelled on GR 3.10 blocks.*
 Correct, and it overturns the ring design this section previously proposed.
 
-**`gr-uhd/lib/usrp_source_impl.cc:614-623` — the reference implementation:**
+**`gr-uhd/lib/usrp_source_impl.cc:614-623` — the reference implementation.**
+⚠ **QUOTED FOR ANALYSIS ONLY — GNU Radio 3.10 is GPL-3.0. Do not copy these lines into this tree.**
 
 ```cpp
 int usrp_source_impl::try_work(int noutput_items, …, gr_vector_void_star& output_items) {
@@ -241,6 +242,29 @@ Add what `SoapySource` lacks: **report the load average** with any throughput fi
 Additive. `SoapySource` is untouched; `UhdSource` lives beside it in `blocks/sdr/`. Harnesses select
 via an env switch until the new block is proven, then default over. **Nothing in `DRIFT.md` is
 reverted by this** — the Category I instrumentation stays useful for both.
+
+## 11b · ⚠ LICENCE RULE — ideas yes, source no
+
+**Owner, 2026-07-30: from fair-acc you may plagiarise ideas and procedures, but do not cut and
+paste. LGPL vs MIT.**
+
+| source | licence | what may be taken |
+|---|---|---|
+| **this tree / `gnuradio/gnuradio4` / the separated repos** | MIT | **anything** — `HttpBlock`, `ClockSource`, `NullSources` are safe to follow line for line |
+| **`fair-acc/gnuradio4`**, including its WiP branches | **LGPL-3.0** | **ideas and procedures only.** Read `ian/779-convert-exceptions-to-expected`, `ian/fix-tsan-qa-scheduler-messages`, `onnx_integration` for approach — then write our own |
+| **GNU Radio 3.10** (`gr-uhd`, `gr-zeromq`, `scheduler_tpb`) | **GPL-3.0** | **ideas and procedures only**, and stricter — GPL would be viral on distribution |
+
+**Practical test before writing a line:** if the result would be recognisable as *their* code rather
+than ours — same identifiers, same structure, same ordering — it is a copy, whatever the intent.
+Re-expressing a mechanism after understanding it is not.
+
+**What this design takes, and it is all in this category:** re-tag after a discontinuity; bounded
+retry on overflow; treat timeout as normal; tag with time, rate and frequency at the sample offset;
+defer slow work out of `start()`. **Procedures, every one — no source.**
+
+**Already-known exposure:** `HANDOFF.md` I-8 records that four cherry-picks postdate fair-acc's
+relicensing, so the tree is *"MIT on paper, LGPL-derived in fact"* (`DRIFT.md` Category E). That is
+existing and separately revertible. **This rule prevents adding to it.**
 
 ## 12 · Open questions — to settle before writing code
 

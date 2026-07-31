@@ -119,6 +119,10 @@ We're working with the early RC of an open-source project that includes unmainta
 - **No network fetch** without explicit discussion and approval. Source only from hosts with active
   third-party malware monitoring.
 - **PUSH REGULARLY to `origin`** — it is our fork.
+- **⚠ IDEAS YES, SOURCE NO.** From **fair-acc** (LGPL-3.0) and **GNU Radio 3.10** (GPL-3.0) you may take
+  ideas and procedures; **never cut and paste**. This tree is MIT. In-tree gnuradio4 code is MIT and may
+  be followed directly. Test: if the result is recognisable as *their* code — same identifiers, structure,
+  ordering — it is a copy. See `DESIGN_UhdSource.md` §11b.
 - **No pull requests to upstream** (`gnuradio/gnuradio4*`, `fair-acc/gnuradio4`).
 - **Report regressions as prominently as wins.** Label anything not actually measured.
 - **⚠ NO SERIALS, ABSOLUTE PATHS, OR SITE DETAILS IN THE REPOSITORY.** Radio serials, capture
