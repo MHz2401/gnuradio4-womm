@@ -3606,3 +3606,53 @@ moment" prediction was right for the wrong reason.
 **Fixable, and narrowly:** cancel or close the bridge's sockets *before* joining, or use asynchronous
 reads with a cancellation signal instead of `sync_recv`. It is a shutdown-ordering bug in one class,
 not an architectural problem.
+
+### 10.45 ⚠ THE FORK IS NEWER THAN WHAT I DIAGNOSED — and Studio does not hit the deadlock
+
+Owner forked the control plane ~10 minutes after a Josh Morman commit, ran a flowgraph several times
+in Studio, edited it, and **observed no hang.**
+
+| tree | HEAD |
+|---|---|
+| my read-only clone (§10.44 diagnosed this) | `7410d26`, **2026-06-05** |
+| the owner's fork (what he ran) | `c9fd13a`, **2026-07-27** — *"fix: preserve catalog response encoding and improve server diagnostics"* |
+
+**Seven weeks newer, and that commit touches `src/api/http_server.cpp`** — the file containing
+`WebSocketBridge`. So §10.44 was diagnosed against superseded code and must be re-qualified.
+
+**But the defect structure survives.** In the fork, `src/api/http_server.cpp:633-637`:
+
+```cpp
+void run() {
+    std::jthread browser_to_internal(…);
+    std::jthread internal_to_browser(…);
+    browser_to_internal.join();      // ← still a bare join
+    internal_to_browser.join();
+```
+
+Unchanged. Morman's commit fixed catalogue encoding and diagnostics, **not** the join chain.
+
+#### Why Studio does not hit it, and the test does
+
+**A browser closing its WebSocket cleanly is what saves you.** A clean close makes one forwarder's
+`read()` throw `websocket::error::closed`, which calls `close()`, which shuts down **both** sockets —
+waking the other forwarder. The loop unwinds and `run()` returns.
+
+The deadlock needs the case where **neither side sends a close** and the socket is simply abandoned,
+which is what `StopClosesExistingWebsocketConnectionsDeterministically` constructs deliberately.
+
+**So: a latent bug, not a live one.** Real Studio use takes the clean-close path. It would surface on
+an abrupt client disconnect — a killed browser, a dropped network, a crashed tab — which on
+`127.0.0.1` is rare.
+
+#### Two consequences
+
+1. **§10.44's "real blocker for the intended workflow" is WITHDRAWN.** The owner's interactive run
+   refutes it directly. The diagnosis of *what* deadlocks stands and was confirmed from a live stack;
+   the claim about *how much it matters* was wrong.
+2. **The 6 catalogue test failures (§10.39) may already be fixed** — `c9fd13a` is precisely a
+   catalogue-encoding fix, and those failures were catalogue metadata mismatches. **Untested against
+   the fork**; worth re-running `ctest` there before treating them as our problem.
+
+**Standing lesson, again:** I diagnosed a clone that was seven weeks stale while the owner ran the
+current code. Check the provenance of the tree you are reasoning about, not just the code in it.
