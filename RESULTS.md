@@ -3335,3 +3335,74 @@ operations"*: the coupling that criterion worries about is architecturally absen
 **Still unknown, and it is the gate:** whether the control plane builds and runs on macOS. It is MIT,
 small, and auditable — `UI_OPTIONS.md`'s recommendation to evaluate it **before** Studio still holds,
 because if it does not build, Studio has nothing to talk to.
+
+### 10.39 ★★★ THE CONTROL PLANE BUILDS AND RUNS ON macOS — the UI gate passes
+
+`UI_OPTIONS.md` named this the **only unknown that matters**: *"if the C++ control plane does not
+build and run against our macOS GR4 install, Studio is moot."* Tested at the owner's direction.
+
+**It builds. 96 % of its tests pass. The gate is open.**
+
+#### Step 1 — gnuradio4 installs cleanly on macOS, which was never tried before
+
+Our tree has always been **built and never installed**. `cmake --install build-fixed --prefix
+../gr4-install` succeeds and produces the full package: `gnuradio4Config.cmake`,
+`gnuradio4Targets.cmake`, `gnuradio4PluginTargets.cmake`, `lib/pkgconfig/gnuradio4.pc`, headers, and
+the plugin `.dylib`s.
+
+That is the **installed-SDK boundary** `HANDOFF.md` lists as worth harvesting from tree (C). It works
+here, today, with no changes.
+
+#### Step 2 — the control plane configures against it
+
+```
+-- Found nlohmann_json: 3.12.0     -- Found Boost: 1.90.0     -- Found ZLIB: 1.2.12
+-- Building with GNU Radio 4-backed block catalog from …/gr4-install/lib
+```
+
+One dependency was missing — **GTest**. Installed via brew with the owner's explicit approval under
+I-4; the dry run showed *"Would install 1 formula: googletest"*, no dependencies and no transitive
+upgrades. **`find_package(GTest CONFIG REQUIRED)` is unconditional**, so it is needed even for a
+server-only build; there is no option to skip it.
+
+#### Step 3 — it builds, producing `gr4cp_server` and `gr4cp-cli`
+
+Clean build at `-j16`, Release, Apple clang 21. No `-Werror` suppression needed
+(`GR4CP_SUPPRESS_IMPORTED_WERROR` left OFF).
+
+#### Step 4 — tests: 131 of 137 pass, one hangs
+
+| | result |
+|---|---|
+| **passed** | **131 / 137 (96 %)** in 5.4 s |
+| failed | 6 |
+| hung | 1 — `HttpApiTest.BrowserFacingWebsocketRouteUpgradesAndProxiesFrames`, killed after **20 minutes** |
+| skipped | ~13, mostly `Gr4RuntimeManagerTest` and `RealRuntimeHttpApiTest` |
+
+**The hang is a real finding**, not slowness: a browser-facing WebSocket proxy route that never
+completes on macOS. Excluded with `-E Websocket` to get the rest; **it will matter, because that
+route is how Studio streams live data to a browser.**
+
+**The 6 failures look like version skew, not platform trouble.** All are block-catalogue tests, and
+the representative failure is a port-count mismatch:
+
+```
+http_api_test.cpp:1088: Expected equality of these values:
+  body["inputs"].size()   Which is: 1
+  2U                      Which is: 2
+```
+
+The catalogue reflects **our** gnuradio4, which has drifted from the upstream the control plane's
+tests were written against — five fair-acc cherry-picks plus our own patches (`DRIFT.md`).
+**Stated as the likely explanation, not a confirmed one:** a port-count disagreement is consistent
+with reflection skew, and nothing here points at macOS.
+
+#### What this unlocks, and what it does not
+
+- **Studio has something to talk to.** `UI_OPTIONS.md`'s gate is passed, so evaluating Studio itself
+  is now worth doing rather than speculative.
+- **The separate-process architecture is real on this machine** — which is the structural answer to
+  D8's *"no unanticipated overflow during graphical display / UI operations"*: a GUI in another
+  process cannot stall the radio's threads.
+- **Not yet done:** running `gr4cp_server` and driving it; the WebSocket hang; whether the 6 failures
+  are skew or substance; and Studio's own build, which is Node/React and untried.
