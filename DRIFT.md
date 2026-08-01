@@ -425,6 +425,57 @@ combination is the segfault.
 
 ---
 
+## Category J — SoapyUHD divergence: multi-device sync + discoverable settings (2026-08-01)
+
+**Owner authorised modifying SoapyUHD** after the licence question was settled: Tier 1 "Works
+On My Mac" outranks Tier 3 licence purity, and `wosem` (Works On Someone Else's Mac) is a later
+epoch we are not working on. ⚠ **SoapyUHD is GPL-3.0**, so this is a GPL derivative. Fine while
+never distributed; it must not be absorbed into MIT-licensed code.
+
+**Carried as `patches/womm/SoapyUHD-0003-multi-device-sync-and-discoverable-settings.patch`**,
+in the existing patch-series style: `vendor/SoapyUHD` stays byte-exact and
+`scripts/verify-vendor.sh` still passes (confirmed after the change).
+
+### What it adds, and why it belongs in the driver rather than in our block
+
+**1. `SYNC_DEVICES` — one command, every radio.** A USB B2xx is one device with one mboard
+(`b200_impl.cpp:309` hardcodes `/mboards/0`; `UHDSoapyDevice.cpp:215` does the same on the
+reverse bridge), so a `multi_usrp` can never span several of them and `ALL_MBOARDS` cannot
+reach them. Separate devices had no way to receive one command together, and **every**
+application driving more than one B2xx has had to rebuild the same host-side loop — as ours
+did. The patch keeps a process-wide registry of open UHD devices, detects **one** PPS
+transition, and broadcasts `set_time_next_pps()` to all of them so they latch the **same** edge.
+
+Measured on four B210s with `get_time_last_pps()`, before and after:
+
+| | last-PPS spread |
+|---|---|
+| per-radio `UNKNOWN_PPS` | 6.000000 s |
+| external REF+PPS, no zeroing at all | 8.509223 s |
+| our host-side loop | 0.000000 s |
+| **driver `SYNC_DEVICES`** | **0.000000 s** |
+
+`UhdSource` now contains **no timed-command machinery at all** — one
+`writeSetting("SYNC_DEVICES", "0")`.
+
+**2. `getSettingInfo()` / `writeSetting()` / `readSetting()` implemented.** Upstream leaves all
+three to `SoapySDR::Device`'s defaults, which are `return ArgInfoList()`, a silent `return;`
+and `return ""`. Two consequences fixed: the driver's magic strings were **undiscoverable**
+(`setHardwareTime` accepts `"PPS"`, `"UNKNOWN_PPS"`, `"CMD"` and no enumeration said so —
+finding `UNKNOWN_PPS` cost roughly a quarter of four sessions), and there was no extension
+point for a cross-device operation. Both are now declared and readable.
+
+⚠ **Still true upstream and NOT changed by us:** `writeSetting` on any *other* key remains the
+base-class silent no-op, so `device_settings` on a UHD device is accepted and discarded without
+error. `UhdSource` deliberately does not expose that setting.
+
+### Reversal
+
+Delete the patch file and rebuild the prefix. `UhdSource::armAllRadios()` would then need its
+host-side loop restored — kept in git history at the commit before this one.
+
+---
+
 ## Category I — event instrumentation on the receive path (additive, 2026-07-29)
 
 `blocks/sdr/include/gnuradio-4.0/sdr/SoapySource.hpp`. Added while building the S2-3 instrument,

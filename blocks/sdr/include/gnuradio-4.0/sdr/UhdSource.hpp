@@ -343,40 +343,23 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         const bool externalTime = std::ranges::any_of(members, [](const UhdSource* radio) { return !radio->time_source->empty() && radio->time_source.value != "none"; });
 
         if (externalTime) {
-            // ★ MULTI-DEVICE PPS, and this shape is MEASURED rather than reasoned.
+            // ★ ONE CALL. The multi-device epoch now lives in the DRIVER, not here.
             //
-            // A timed command is atomic AND HARDWARE-IMPLEMENTED — but atomic PER DEVICE.
-            // set_time_unknown_pps does the two-PPS-tick discipline itself and is exactly
-            // right for one multi_usrp (covering all ITS mboards). Four separate B210s are
-            // four separate multi_usrp objects, so it becomes four independent atomic
-            // commands, each latching whichever edge it happens to reach.
+            // patches/womm/SoapyUHD-0003 adds SYNC_DEVICES to SoapyUHD: it keeps a
+            // process-wide registry of open UHD devices, detects ONE PPS transition, and
+            // broadcasts set_time_next_pps() to all of them so they latch the SAME edge.
+            // That is the SIMD shape — one command, every radio — and it belongs in the
+            // driver where any SoapySDR consumer gets it, rather than being rebuilt by
+            // every application that drives more than one B2xx.
             //
-            // Measured 2026-08-01 with the last-PPS discriminator below:
-            //     per-radio UNKNOWN_PPS  -> spread 6.000000 s   (different edges)
-            //     broadcast as here      -> spread 0.000000 s   (one shared epoch)
-            //
-            // So the multi-device case needs the SIMD shape: detect ONE transition, then
-            // broadcast the SAME command to every radio. "PPS" arms the next edge without
-            // waiting, so they all latch it together.
-            auto&      reference = members.front()->_device;
-            const auto lastPps   = reference.getHardwareTime("PPS");
-            const auto deadline  = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
-            while (reference.getHardwareTime("PPS") == lastPps) {
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    this->emitErrorMessage("armAllRadios()", "no PPS transition within 1500 ms — is the PPS cable connected and the Octoclock running?");
-                    return false;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // It is also DISCOVERABLE: the same patch implements getSettingInfo(), which
+            // upstream leaves as an empty stub, so SYNC_DEVICES and the setHardwareTime
+            // magic strings ("PPS", "UNKNOWN_PPS", "CMD") now appear in an enumeration
+            // instead of being findable only by reading SoapyUHDDevice.cpp.
+            if (auto synced = members.front()->_device.writeSetting("SYNC_DEVICES", "0"); !synced) {
+                this->emitErrorMessage("armAllRadios()", synced.error());
+                return false;
             }
-            // A transition just happened, so there is nearly a full second before the next
-            // one. "PPS" arms that next edge without waiting, so every radio latches it.
-            for (UhdSource* radio : members) {
-                if (auto zeroed = radio->_device.setHardwareTime(0, "PPS"); !zeroed) {
-                    this->emitErrorMessage("armAllRadios()", zeroed.error());
-                    return false;
-                }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1200)); // let that edge land
         } else {
             for (UhdSource* radio : members) {
                 if (auto zeroed = radio->_device.setHardwareTime(0); !zeroed) {
@@ -386,10 +369,6 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
             }
         }
 
-        // One literal instant on the shared, just-zeroed epoch — never getHardwareTime()
-        // plus an offset, which is a race that gives each radio a different start. It must
-        // also be comfortably AHEAD of where the clocks are now, or the command is late
-        // and UHD answers LATE_COMMAND rather than streaming.
         // A TIMED COMMAND. activate() with SOAPY_SDR_HAS_TIME carries a time_spec, and the
         // B210 handles the edge discipline itself — including the two-PPS-tick safety that
         // makes timed commands cost what they do. We do NOT compute PPS boundaries, round to

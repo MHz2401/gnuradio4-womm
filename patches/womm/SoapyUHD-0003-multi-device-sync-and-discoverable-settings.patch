@@ -1,0 +1,182 @@
+--- a/SoapyUHDDevice.cpp
++++ b/SoapyUHDDevice.cpp
+@@ -7,6 +7,12 @@
+  **********************************************************************/
+ 
+ #include "TypeHelpers.hpp"
++
++#include <algorithm>
++#include <chrono>
++#include <mutex>
++#include <thread>
++#include <vector>
+ #include <SoapySDR/Device.hpp>
+ #include <SoapySDR/Registry.hpp>
+ #include <SoapySDR/Logger.hpp>
+@@ -35,6 +41,30 @@
+ /***********************************************************************
+  * Device interface
+  **********************************************************************/
++class SoapyUHDDevice;
++
++/*!
++ * Process-wide registry of live SoapyUHDDevice instances.
++ *
++ * A USB B2xx is one device with one mboard (b200_impl.cpp hardcodes /mboards/0), so a
++ * multi_usrp can never span several of them and ALL_MBOARDS cannot reach them. Separate
++ * devices therefore have no way to receive one command together, and every application
++ * driving more than one B2xx has had to rebuild the same host-side loop.
++ *
++ * This registry lets the driver do it once instead.
++ */
++static std::mutex &soapyUHDRegistryMutex(void)
++{
++    static std::mutex m;
++    return m;
++}
++
++static std::vector<SoapyUHDDevice *> &soapyUHDRegistry(void)
++{
++    static std::vector<SoapyUHDDevice *> devices;
++    return devices;
++}
++
+ class SoapyUHDDevice : public SoapySDR::Device
+ {
+ public:
+@@ -45,8 +75,23 @@
+     {
+         if (args.count("rx_subdev") != 0) _dev->set_rx_subdev_spec(args.at("rx_subdev"));
+         if (args.count("tx_subdev") != 0) _dev->set_tx_subdev_spec(args.at("tx_subdev"));
++        std::lock_guard<std::mutex> lock(soapyUHDRegistryMutex());
++        soapyUHDRegistry().push_back(this);
++    }
++
++    ~SoapyUHDDevice(void)
++    {
++        std::lock_guard<std::mutex> lock(soapyUHDRegistryMutex());
++        std::vector<SoapyUHDDevice *> &reg = soapyUHDRegistry();
++        reg.erase(std::remove(reg.begin(), reg.end(), this), reg.end());
+     }
+ 
++    //! multi_usrp handle, for the cross-device operations below
++    uhd::usrp::multi_usrp::sptr multiUSRP(void) const
++    {
++        return _dev;
++    }
++
+     /*******************************************************************
+      * Identification API
+      ******************************************************************/
+@@ -881,8 +926,111 @@
+     void setCommandTime(const long long timeNs, const std::string &)
+     {
+         this->setHardwareTime(timeNs, "CMD");
++    }
++
++    /*******************************************************************
++     * Settings API
++     *
++     * Upstream SoapyUHD implements none of this, so SoapySDR::Device's defaults apply:
++     * getSettingInfo returns an empty list and writeSetting is a silent `return;`. Two
++     * consequences this fixes:
++     *
++     *  1. The driver's magic strings were undiscoverable. setHardwareTime() accepts
++     *     "PPS", "UNKNOWN_PPS" and "CMD", and nothing in any enumeration says so - the
++     *     only way to learn "UNKNOWN_PPS" was to read this file. They are declared here.
++     *
++     *  2. There was no way to issue one command to several devices. See SYNC_DEVICES.
++     ******************************************************************/
++
++    SoapySDR::ArgInfoList getSettingInfo(void) const
++    {
++        SoapySDR::ArgInfoList setts;
++
++        SoapySDR::ArgInfo syncArg;
++        syncArg.key = "SYNC_DEVICES";
++        syncArg.name = "Synchronise all UHD devices in this process";
++        syncArg.description =
++            "Align every UHD device opened by this process onto ONE shared time epoch. "
++            "Detects a single PPS transition, then issues set_time_next_pps(value) to every "
++            "device so they all latch the SAME edge. Requires an external PPS on each device "
++            "(set_time_source). Value is the time in whole seconds to set at that edge, "
++            "default 0. Returns after the edge has landed.";
++        syncArg.value = "0";
++        syncArg.type = SoapySDR::ArgInfo::STRING;
++        setts.push_back(syncArg);
++
++        SoapySDR::ArgInfo whatArg;
++        whatArg.key = "HARDWARE_TIME_WHAT";
++        whatArg.name = "Accepted setHardwareTime()/getHardwareTime() 'what' values";
++        whatArg.description =
++            "Read-only documentation of this driver's magic strings, which appear in no other "
++            "enumeration. setHardwareTime: '' = set_time_now, 'PPS' = set_time_next_pps, "
++            "'UNKNOWN_PPS' = set_time_unknown_pps (waits for a transition first, then arms the "
++            "following edge - the call to use with an external PPS), 'CMD' = set_command_time "
++            "(0 clears it). getHardwareTime: '' = get_time_now, 'PPS' = get_time_last_pps. "
++            "NOTE hasHardwareTime() answers false for 'CMD' although 'CMD' is implemented.";
++        whatArg.value = ", PPS, UNKNOWN_PPS, CMD";
++        whatArg.type = SoapySDR::ArgInfo::STRING;
++        setts.push_back(whatArg);
++
++        return setts;
+     }
+ 
++    void writeSetting(const std::string &key, const std::string &value)
++    {
++        if (key == "SYNC_DEVICES") return this->syncDevices(value);
++        SoapySDR::Device::writeSetting(key, value);
++    }
++
++    std::string readSetting(const std::string &key) const
++    {
++        if (key == "HARDWARE_TIME_WHAT") return ", PPS, UNKNOWN_PPS, CMD";
++        return SoapySDR::Device::readSetting(key);
++    }
++
++    /*!
++     * One command, every device, one epoch.
++     *
++     * set_time_unknown_pps() is atomic and correct for ONE multi_usrp, but it waits for a
++     * transition and then sleeps internally, so calling it per device leaves each latching a
++     * DIFFERENT edge - measured on four B210s as a 6 s spread of get_time_last_pps(), against
++     * 0 s for the sequence below.
++     *
++     * So: detect ONE transition here, then broadcast set_time_next_pps() - which arms the
++     * next edge without waiting - to every registered device, so they all latch it together.
++     */
++    void syncDevices(const std::string &value)
++    {
++        const long long secs = value.empty() ? 0 : boost::lexical_cast<long long>(value);
++        std::lock_guard<std::mutex> lock(soapyUHDRegistryMutex());
++        std::vector<SoapyUHDDevice *> &reg = soapyUHDRegistry();
++        if (reg.empty()) return;
++
++        //catch a PPS transition on one device, so the arming below has nearly a full
++        //second of margin before the edge it targets
++        uhd::usrp::multi_usrp::sptr ref = reg.front()->multiUSRP();
++        const uhd::time_spec_t start = ref->get_time_last_pps();
++        const std::chrono::steady_clock::time_point deadline =
++            std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
++        while (ref->get_time_last_pps() == start)
++        {
++            if (std::chrono::steady_clock::now() > deadline)
++            {
++                throw std::runtime_error("SoapyUHD SYNC_DEVICES: no PPS transition within 1500 ms - is a PPS connected and set_time_source() external?");
++            }
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));
++        }
++
++        //arm the SAME next edge on every device
++        for (size_t i = 0; i < reg.size(); i++)
++        {
++            reg[i]->multiUSRP()->set_time_next_pps(uhd::time_spec_t(double(secs)));
++        }
++
++        //let that edge land before returning, so the caller may use the epoch immediately
++        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
++    }
++
+     /*******************************************************************
+      * Sensor support
+      ******************************************************************/
