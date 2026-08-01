@@ -303,6 +303,37 @@ the requested rate. Either way the *rate* is what you set (F-1).
 as possible, which fits both observations. An earlier draft of this document glossed the log's 40 MHz as
 "4× decimation" — **wrong, and corrected by a measurement rather than by more reading.**
 
+### ★ 9.4a — external REF gives RATE agreement, not EPOCH agreement (measured)
+
+Owner's hypothesis, 2026-08-01: with the external clock set, SoapySDR establishes the shared
+epoch automatically, and that automatic step is what was stalling `start()`.
+
+**Measured on four B210s sharing an Octoclock**, `clock_source=external`, `time_source=external`,
+using the `get_time_last_pps()` discriminator:
+
+| what was done | last-PPS across four radios | spread |
+|---|---|---|
+| external REF+PPS selected, **no zeroing at all** | 11.742958 .. 20.252181 s | **8.509223 s** |
+| external REF+PPS, **one transition then broadcast `PPS`** | 11.000000 on all four | **0.000000 s** |
+
+**So selecting `external` does NOT align the epoch.** It buys **rate agreement** — every radio
+ticks off one 10 MHz, so they do not drift relative to each other — but each device's time
+counter keeps its own arbitrary power-on offset. The PPS signal is present and shared; what is
+missing is telling each device *what time the next edge represents*. **Frequency lock is not
+time alignment.**
+
+**Corroborating signature, and a useful check on its own:** an un-zeroed radio reports a
+**fractional** last-PPS time; a radio zeroed *on* a PPS edge reports an **exact integer**,
+because every subsequent edge then lands on a whole second by construction. Fractional
+last-PPS = that radio was never given an origin.
+
+**On the causal half:** the ~2.8 s per radio that forced device bring-up out of `start()` is
+`multi_usrp::make()` — detect, USB 3, CODEC control, radio control, register loopback
+self-test, all visible in `RUN_Start_GR310_OneUnit_TxRx.log`. The `UNKNOWN_PPS` call adds its
+own ~1-2 s on top, but it is the second cost, not the first.
+
+`WOMM_NO_ZERO=1` on `womm_uhd_rx` reproduces the first row.
+
 ### ★ 9.4b — four USB B210s CANNOT be one `multi_usrp`, and nothing coordinates them in software
 
 Owner's hypothesis, 2026-08-01: `multi_usrp` means several USRPs treated as one, as opposed

@@ -324,6 +324,22 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         }
         auto& members = barrier().members;
 
+        // ★ EXPERIMENT, owner's hypothesis: with the external REF and PPS selected, the
+        // radios may already share an epoch without us zeroing anything. If so, every line
+        // of the zeroing below is work the driver already did. WOMM_NO_ZERO=1 skips it.
+        if (std::getenv("WOMM_NO_ZERO") != nullptr) {
+            const auto      nowNs = static_cast<long long>(members.front()->_device.getHardwareTime());
+            const long long armAt = nowNs + 1'000'000'000LL;
+            for (UhdSource* radio : members) {
+                if (auto activated = radio->_rxStream.activate(SOAPY_SDR_HAS_TIME, armAt, 0UZ); !activated) {
+                    this->emitErrorMessage("armAllRadios()", activated.error());
+                    return false;
+                }
+            }
+            barrier().armed = true;
+            return true;
+        }
+
         const bool externalTime = std::ranges::any_of(members, [](const UhdSource* radio) { return !radio->time_source->empty() && radio->time_source.value != "none"; });
 
         if (externalTime) {
