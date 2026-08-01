@@ -222,11 +222,33 @@ is precisely the bypass we are trying to remove. **Correctness before the copy.*
 
 Keep from this session's work on `SoapySource`, unchanged in substance: counters for overflow,
 timeout, corruption and stream error; event tags carrying **`device_time_ns`**, not host time;
-`lo_lock_ms` per channel. And the honest labelling: **underflow does not exist on RX** — SoapyUHD
-never returns it — so the receive-side starvation event is **timeout**.
+`lo_lock_ms` per channel. 
 
-Add what `SoapySource` lacks: **report the load average** with any throughput figure. Every number in
-`RESULTS.md` Phase 10 had to be qualified because no harness recorded it (§10.32).
+**OWNER COMMENT**: sorry I missed this BS-ish and misleading statement text:  
+~~And the honest labelling: **underflow does not exist on RX** — SoapyUHD
+never returns it — so the receive-side starvation event is **timeout**.~~ 
+Here is a quote directly from a **source of truth**, the Ettus hardware manual, which simple web search finds at
+https://files.ettus.com/manual/page_general.html#:~:text=as%20a%20result.-,Overflow/Underflow%20Notes,-Note%3A%20The
+> **Underrun notes**   
+> When transmitting, the device consumes samples at a constant rate. Underflow occurs when the host does not produce  
+> data fast enough. When UHD software detects the underflow, it prints a "U" to stdout, and pushes a message packet into the async message stream.
+
+
+~~Add what `SoapySource` lacks: **report the load average** with any throughput figure. Every number in
+`RESULTS.md` Phase 10 had to be qualified because no harness recorded it (§10.32).~~
+**OWNER COMMENT:** If you're a hacker bit-banging a laser printer then you might need to "estimate the sample rate," 
+of a non-radio that you have coerced into producing radio emissions.  However, there's no modern SDR, including hackrf
+or Flipper, that needs to "estimate the sample rate."  SoapySDR dates back to when there were no SDRs and you needed 
+to hack what you have. Parameters like this are silly for a modern digital SDR platform, but have many wonderful 
+uses by friends and neighbors all over the world who like to make radios out of non-radios. If you can get signal 
+from a negighbor's hair-dryer, you're proabably not concerned with 'measuring the load average.'    
+   
+SoapySource (and all other drivers) lack 'meausuring the load averager' for this reason. If you're using a modern  
+digital SDR and want to know the load average, you multipy the values you entered into the device:   
+`Total_Load_Of_Run = sample_rate * bytes_per_sample * number_of_channels * how_long_channels_the_channels_ran`   
+`Load_Average = Total_Load_Of_Run / how_long_channels_the_channels_ran`   
+The `Load_Average` failure mode: _"I don't know `how_long_channels_the_channels_ran`, so this is hard."_    
+Solution: AL-GEBRA!  `Load_Average = sample_rate * bytes_per_sample * number_of_channels`  
 
 ## 10 · Testing
 

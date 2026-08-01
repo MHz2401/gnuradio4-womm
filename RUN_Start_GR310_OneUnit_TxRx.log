@@ -1,0 +1,61 @@
+Generating: "grc_3109_test_v1.py"
+
+Executing: /usr/bin/python3 -u grc_3109_test_v1.py
+
+[INFO] [UHD] linux; GNU C++ version 13.2.0; Boost_108300; UHD_4.6.0.0+ds1-5.1ubuntu0.24.04.1
+[INFO] [B200] Detected Device: B200
+[INFO] [B200] Operating over USB 3.
+[INFO] [B200] Initialize CODEC control...
+[INFO] [B200] Initialize Radio control...
+[INFO] [B200] Performing register loopback test... 
+[INFO] [B200] Register loopback test passed
+[INFO] [B200] Setting master clock rate selection to 'automatic'.
+[INFO] [B200] Asking for clock rate 16.000000 MHz... 
+[INFO] [B200] Actually got clock rate 16.000000 MHz.
+[INFO] [B200] Asking for clock rate 40.000000 MHz... 
+[INFO] [B200] Actually got clock rate 40.000000 MHz.
+[INFO] [MULTI_USRP]     1) catch time transition at pps edge
+[INFO] [MULTI_USRP]     2) set times next pps (synchronously)
+[INFO] [MULTI_USRP]     1) catch time transition at pps edge
+[INFO] [MULTI_USRP]     2) set times next pps (synchronously)
+
+----------------------------------------------------------------------
+Tag Debug: 
+Input Stream: 00
+  Offset: 0  Source: usrp_source1     Key: rx_time   Value: {0 0.113639}
+  Offset: 0  Source: usrp_source1     Key: rx_rate   Value: 1e+07
+  Offset: 0  Source: usrp_source1     Key: rx_freq   Value: 9.15e+08
+----------------------------------------------------------------------
+
+>>> Done
+
+Generating: "grc_3109_test_v1.py"
+
+Executing: /usr/bin/python3 -u grc_3109_test_v1.py
+
+[INFO] [UHD] linux; GNU C++ version 13.2.0; Boost_108300; UHD_4.6.0.0+ds1-5.1ubuntu0.24.04.1
+[INFO] [B200] Detected Device: B200
+[INFO] [B200] Operating over USB 3.
+[INFO] [B200] Initialize CODEC control...
+[INFO] [B200] Initialize Radio control...
+[INFO] [B200] Performing register loopback test... 
+[INFO] [B200] Register loopback test passed
+[INFO] [B200] Setting master clock rate selection to 'automatic'.
+[INFO] [B200] Asking for clock rate 16.000000 MHz... 
+[INFO] [B200] Actually got clock rate 16.000000 MHz.
+[INFO] [B200] Asking for clock rate 40.000000 MHz... 
+[INFO] [B200] Actually got clock rate 40.000000 MHz.
+[INFO] [MULTI_USRP]     1) catch time transition at pps edge
+[INFO] [MULTI_USRP]     2) set times next pps (synchronously)
+[INFO] [MULTI_USRP]     1) catch time transition at pps edge
+[INFO] [MULTI_USRP]     2) set times next pps (synchronously)
+
+----------------------------------------------------------------------
+Tag Debug: 
+Input Stream: 00
+  Offset: 0  Source: usrp_source1     Key: rx_time   Value: {0 0.119654}
+  Offset: 0  Source: usrp_source1     Key: rx_rate   Value: 1e+07
+  Offset: 0  Source: usrp_source1     Key: rx_freq   Value: 9.15e+08
+----------------------------------------------------------------------
+
+>>> Done
