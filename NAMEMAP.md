@@ -297,6 +297,12 @@ the 16 MHz cap — **by switching off the selector that correctly chose 40 MHz i
 trade, not a free win: pin it when you need a specific MCR, leave it unset when you want UHD to serve
 the requested rate. Either way the *rate* is what you set (F-1).
 
+⚠ **The selection is not a fixed multiple of the sample rate.** Measured here, on this machine, by
+`qa_UhdSource` against a real B210: **1 MS/s selected 32 MHz**, where the GR 3.10 log's 10 MS/s selected
+40 MHz. Ettus document the selector as *maximising* the clock so as to enable as many half-band filters
+as possible, which fits both observations. An earlier draft of this document glossed the log's 40 MHz as
+"4× decimation" — **wrong, and corrected by a measurement rather than by more reading.**
+
 ### 9.5 — `set_time_unknown_pps()` in full, and it is the owner's described sequence
 
 `host/lib/usrp/multi_usrp.cpp:491-520`. One call does exactly this:

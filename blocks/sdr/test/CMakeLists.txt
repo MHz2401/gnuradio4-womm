@@ -63,6 +63,22 @@ if(TARGET SoapySDR)
     endif()
   endif()
 
+  # UhdSource: device init is blocking and lives in init(), so the hardware-free tests here
+  # exercise the ring and the settings surface; device paths self-skip when no radio is present.
+  add_executable(qa_UhdSource qa_UhdSource.cpp)
+  target_link_libraries(
+    qa_UhdSource
+    PRIVATE gnuradio-options
+            gnuradio-core
+            gnuradio-blocklib-core
+            gr-sdr
+            gr-common
+            gr-testing
+            ut)
+  add_test(NAME qa_UhdSource COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} ${CMAKE_CURRENT_BINARY_DIR}/qa_UhdSource)
+  # skip LSAN: the 168-byte leak inside SoapySDR's dynamically loaded driver modules is not ours
+  set_tests_properties(qa_UhdSource PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+
   add_executable(qa_SoapySource qa_SoapySource.cpp)
   target_link_libraries(
     qa_SoapySource

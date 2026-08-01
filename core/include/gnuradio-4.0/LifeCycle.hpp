@@ -235,7 +235,13 @@ public:
             // Call specific methods in TDerived based on the state
             if constexpr (requires(TDerived& d) { d.init(); }) {
                 if (oldState == State::IDLE && newState == State::INITIALISED) {
-                    return invokeLifecycleMethod(&TDerived::init, location);
+                    // Disambiguate: a block that implements this hook must also write
+                    // `using Block<...>::init;`, because Graph::emplaceBlock calls
+                    // init(progress) on the DERIVED type and the no-argument hook would
+                    // otherwise hide it. That makes `&TDerived::init` an overload set, so
+                    // name the signature we want. Without this the hook is unusable by any
+                    // block created through emplaceBlock — which is why nothing used it.
+                    return invokeLifecycleMethod(static_cast<void (TDerived::*)()>(&TDerived::init), location);
                 }
             }
             if constexpr (requires(TDerived& d) { d.start(); }) {

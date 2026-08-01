@@ -90,6 +90,48 @@ add_custom_command(
     ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
   COMMENT "womm: verifying womm_rx_hold links no transmit path")
 
+# womm: multi-radio RX over UhdSource. Times the INIT phase (blocking, inside
+# emplaceBlock) separately from the START phase (must be milliseconds), and checks the
+# acceptance criterion as arithmetic: k-th tag at exactly k*sample_rate, device time
+# exactly one second apart.
+add_executable(womm_uhd_rx womm_uhd_rx.cpp)
+target_link_libraries(
+  womm_uhd_rx
+  PRIVATE gnuradio-options
+          gnuradio-core
+          gnuradio-blocklib-core
+          gr-sdr
+          gr-testing)
+
+add_custom_command(
+  TARGET womm_uhd_rx
+  POST_BUILD
+  COMMAND
+    ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_uhd_rx> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/assert_no_tx.cmake
+  COMMENT "womm: verifying womm_uhd_rx links no transmit path")
+
+# ⚠ womm: THE ONE TRANSMIT-CAPABLE TARGET. Built so UhdSink is compiled and reviewable;
+# deliberately NOT registered with ctest, and structurally unable to run unattended because
+# womm::txArm refuses when stdin is not a terminal. assert_tx_gated.cmake asserts on the
+# LINKED BINARY that the interlock is actually present - the mirror of assert_no_tx.
+add_executable(womm_uhd_tx womm_uhd_tx.cpp)
+target_link_libraries(
+  womm_uhd_tx
+  PRIVATE gnuradio-options
+          gnuradio-core
+          gnuradio-blocklib-core
+          gr-sdr
+          gr-testing)
+
+add_custom_command(
+  TARGET womm_uhd_tx
+  POST_BUILD
+  COMMAND
+    ${CMAKE_COMMAND} -DTARGET_FILE=$<TARGET_FILE:womm_uhd_tx> -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/assert_tx_gated.cmake
+  COMMENT "womm: verifying womm_uhd_tx routes transmit through the arming interlock")
+
 # womm: REVERSIBLE EXPERIMENT - is multi-process necessary? N radios x 2 channels
 # in ONE graph and ONE scheduler, against the 122.88 MS/s taken with N processes.
 # Delete this block and womm_mt_test.cpp to revert; nothing else depends on it.
