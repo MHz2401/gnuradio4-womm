@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <complex>
 #include <cstdlib>
 #include <print>
@@ -110,6 +111,10 @@ int main(int argc, char** argv) {
     const double      gainDb      = envOr("WOMM_GAIN", 30.);
     const std::string antenna     = envOr("WOMM_ANTENNA", "RX2");
     const auto        maxRadios   = static_cast<std::size_t>(envOr("WOMM_RADIOS", 0.));
+    // "external" on both means the 10 MHz REF and the PPS SMA cables from the Octoclock.
+    // Nothing else has to be told about the Octoclock — that IS how a UHD device is told.
+    const std::string clockSource = envOr("WOMM_CLOCK_SOURCE", "");
+    const std::string timeSource  = envOr("WOMM_TIME_SOURCE", "");
 
     std::vector<std::string> serials = discoverSerials();
     if (serials.empty()) {
@@ -123,6 +128,7 @@ int main(int argc, char** argv) {
     std::println("womm UHD multi-radio RX — RECEIVE ONLY");
     std::println("{} radio(s) x {} channels @ {:.3f} MS/s = {:.3f} MS/s aggregate", serials.size(), kChannelsPerRadio, rateHz / 1e6, rateHz * static_cast<double>(serials.size() * kChannelsPerRadio) / 1e6);
     std::println("centre {:.6f} MHz, gain {:.1f} dB, antenna {}, duration {:.1f} s", freqHz / 1e6, gainDb, antenna, durationSec);
+    std::println("clock_source '{}', time_source '{}'{}", clockSource, timeSource, clockSource.empty() ? "  (internal — radios free-run independently)" : "");
     std::println("");
 
     gr::Graph                graph;
@@ -141,6 +147,8 @@ int main(int argc, char** argv) {
                  {"frequency", std::vector<double>(kChannelsPerRadio, freqHz)},
                  {"rx_gains", std::vector<double>(kChannelsPerRadio, gainDb)},
                  {"rx_antennae", std::vector<std::string>(kChannelsPerRadio, antenna)},
+                 {"clock_source", clockSource},
+                 {"time_source", timeSource},
                  {"tag_interval", 1.f},
                  {"verbose_events", true},
         });
@@ -220,6 +228,35 @@ int main(int argc, char** argv) {
         totalOffsetErrors += check.offsetErrors;
         totalTimeGaps += check.deviceTimeGaps;
         std::println("{:<10} {:>14} {:>8} {:>14} {:>12}", std::format("r{}c{}", i / kChannelsPerRadio, i % kChannelsPerRadio), sinks[i]->_nSamplesProduced, check.tagCount, check.offsetErrors, check.deviceTimeGaps);
+    }
+
+    // ★ IS A RADIO ACTUALLY ON THE OTHER END? The sample counts above prove only that the
+    // right NUMBER of samples arrived. An antenna at real gain delivers noise, so a channel
+    // of exact zeros is not receiving whatever the counters say. This is the in-band half
+    // of the check; the operator watching the front-panel LEDs is the out-of-band half, and
+    // the two must agree before anything here is believed.
+    std::println("");
+    std::println("{:<10} {:>16} {:>12} {:>14}", "channel", "non-zero", "non-zero %", "rms");
+    bool anySilent = false;
+    for (std::size_t r = 0UZ; r < radios.size(); ++r) {
+        for (std::size_t ch = 0UZ; ch < kChannelsPerRadio; ++ch) {
+            const auto measured = radios[r]->_measuredSamples[ch].load();
+            const auto nonZero  = radios[r]->_nonZeroSamples[ch].load();
+            const auto energy   = radios[r]->_sumSquares[ch].load();
+            const double pct    = measured > 0U ? 100. * static_cast<double>(nonZero) / static_cast<double>(measured) : 0.;
+            const double rms    = measured > 0U ? std::sqrt(energy / static_cast<double>(measured)) : 0.;
+            if (nonZero == 0U) {
+                anySilent = true;
+            }
+            std::println("{:<10} {:>16} {:>11.2f}% {:>14.6g}", std::format("r{}c{}", r, ch), nonZero, pct, rms);
+        }
+    }
+    if (anySilent) {
+        std::println("");
+        std::println("⚠⚠ AT LEAST ONE CHANNEL IS EXACTLY ZERO FOR EVERY SAMPLE.");
+        std::println("   That is not a quiet band, it is an absent signal path. Sample counts and tag");
+        std::println("   arithmetic can all be perfect while nothing reaches the ADC — do not read a");
+        std::println("   PASS above as evidence that a radio is receiving.");
     }
 
     std::println("");

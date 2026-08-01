@@ -58,7 +58,7 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
     Annotated<std::string, "time_source", Doc<"time reference; validated against listTimeSources()">>                                                              time_source;
     Annotated<std::string, "stream_args", Doc<"SoapyUHD stream kwargs: spp (samples per packet), WIRE (sc8|sc16), peak, fullscale">>                               stream_args;
     Annotated<std::string, "tune_args", Doc<"tune kwargs reaching uhd::tune_request_t.args, e.g. mode_n=integer, int_n_step=... — wired, unlike SoapySource">>      tune_args;
-    Annotated<gr::Size_t, "ring_capacity", Doc<"per-channel ring capacity in samples; rounded up to a power of two">>                                              ring_capacity   = 1U << 16U;
+    Annotated<gr::Size_t, "ring_capacity", Doc<"per-channel ring capacity in samples; rounded up to a power of two">>                                              ring_capacity   = 1U << 18U;
     Annotated<std::uint32_t, "max_time_out_us", Unit<"us">, Doc<"readStream timeout on the IO thread; a timeout is normal, not an error">>                         max_time_out_us = 100'000U;
     Annotated<float, "tag_interval", Unit<"s">, Doc<"seconds between timing tags, converted to an exact sample count (0 = no timing tags)">>                       tag_interval    = 1.f;
     Annotated<bool, "verbose_events", Doc<"log overflow and stream errors to stderr, rate limited to powers of two">>                                              verbose_events  = false;
@@ -83,6 +83,15 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
     std::atomic<gr::Size_t> _corruptionCount{0U};
     std::atomic<gr::Size_t> _streamErrorCount{0U};
     std::atomic<gr::Size_t> _ringFullCount{0U}; // consumer too slow: OUR loss, not the device's
+
+    // ★ IS THERE ACTUALLY A RADIO ON THE OTHER END? A sample count proves only that the
+    // right NUMBER of samples arrived, which a broken path can satisfy with silence. An
+    // antenna at any real gain delivers noise, so a channel whose samples are exactly zero
+    // is not receiving, whatever the counters say. Per channel, accumulated on the IO
+    // thread over the chunk it just read.
+    std::array<std::atomic<std::uint64_t>, nPorts> _nonZeroSamples{};
+    std::array<std::atomic<double>, nPorts>        _sumSquares{};
+    std::array<std::atomic<std::uint64_t>, nPorts> _measuredSamples{};
 
     soapy::Device                          _device{};
     soapy::Device::Stream<T, SOAPY_SDR_RX> _rxStream{};
@@ -263,24 +272,50 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         }
         auto& members = barrier().members;
 
-        // Zero every clock first, in one tight loop, so the epochs are as close together
-        // as the calls themselves. With an external time reference use UNKNOWN_PPS, which
-        // waits for a PPS TRANSITION before arming the following edge — plain "PPS" arms
-        // the next edge blind, so two radios either side of one can land a second apart.
-        for (UhdSource* radio : members) {
-            const bool externalTime = !radio->time_source->empty() && radio->time_source.value != "none";
-            const auto zeroed       = externalTime ? radio->_device.setHardwareTime(0, "UNKNOWN_PPS") : radio->_device.setHardwareTime(0);
-            if (!zeroed) {
-                this->emitErrorMessage("armAllRadios()", zeroed.error());
-                return false;
+        const bool externalTime = std::ranges::any_of(members, [](const UhdSource* radio) { return !radio->time_source->empty() && radio->time_source.value != "none"; });
+
+        if (externalTime) {
+            // ★ MULTI-DEVICE PPS: wait for ONE transition, then set every radio on the
+            // SAME next edge. Calling set_time_unknown_pps per radio would be wrong twice
+            // over — it waits for a transition and then sleeps a second internally, so
+            // four radios take ~8 s AND each latches a DIFFERENT edge, leaving their
+            // epochs whole seconds apart. Separate devices need the wait done once.
+            auto&      reference = members.front()->_device;
+            const auto lastPps   = reference.getHardwareTime("PPS");
+            const auto deadline  = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+            while (reference.getHardwareTime("PPS") == lastPps) {
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    this->emitErrorMessage("armAllRadios()", "no PPS transition within 1500 ms — is the PPS cable connected and the Octoclock running?");
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // A transition just happened, so there is nearly a full second before the next
+            // one. "PPS" arms that next edge without waiting, so every radio latches it.
+            for (UhdSource* radio : members) {
+                if (auto zeroed = radio->_device.setHardwareTime(0, "PPS"); !zeroed) {
+                    this->emitErrorMessage("armAllRadios()", zeroed.error());
+                    return false;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1200)); // let that edge land
+        } else {
+            for (UhdSource* radio : members) {
+                if (auto zeroed = radio->_device.setHardwareTime(0); !zeroed) {
+                    this->emitErrorMessage("armAllRadios()", zeroed.error());
+                    return false;
+                }
             }
         }
 
         // One literal instant on the shared, just-zeroed epoch — never getHardwareTime()
-        // plus an offset, which is a race that gives each radio a different start.
-        constexpr long long kArmAtNs = 500'000'000LL;
+        // plus an offset, which is a race that gives each radio a different start. It must
+        // also be comfortably AHEAD of where the clocks are now, or the command is late
+        // and UHD answers LATE_COMMAND rather than streaming.
+        const auto  nowNs    = static_cast<long long>(members.front()->_device.getHardwareTime());
+        const long long armAt = nowNs + 500'000'000LL;
         for (UhdSource* radio : members) {
-            if (auto activated = radio->_rxStream.activate(SOAPY_SDR_HAS_TIME, kArmAtNs, 0UZ); !activated) {
+            if (auto activated = radio->_rxStream.activate(SOAPY_SDR_HAS_TIME, armAt, 0UZ); !activated) {
                 this->emitErrorMessage("armAllRadios()", activated.error());
                 return false;
             }
@@ -344,6 +379,7 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
                 continue;
             }
             for (std::size_t ch = 0UZ; ch < nPorts; ++ch) {
+                measureContent(ch, scratch[ch].data(), count);
                 _rings[ch].push(scratch[ch].data(), count);
             }
             written += count;
@@ -353,6 +389,25 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         }
 
         _ioDone.store(true, std::memory_order_release);
+    }
+
+    // Cheap enough to leave on: one pass over a chunk the IO thread has already touched.
+    void measureContent(std::size_t ch, const T* samples, std::size_t count) {
+        std::uint64_t nonZero = 0U;
+        double        energy  = 0.;
+        for (std::size_t i = 0UZ; i < count; ++i) {
+            const auto re = static_cast<double>(samples[i].real());
+            const auto im = static_cast<double>(samples[i].imag());
+            if (re != 0. || im != 0.) {
+                ++nonZero;
+            }
+            energy += re * re + im * im;
+        }
+        _nonZeroSamples[ch].fetch_add(nonZero, std::memory_order_relaxed);
+        _measuredSamples[ch].fetch_add(count, std::memory_order_relaxed);
+        // Plain accumulate: this is a liveness indicator, not a calibrated power figure,
+        // and calling it dBFS would overstate what it is.
+        _sumSquares[ch].store(_sumSquares[ch].load(std::memory_order_relaxed) + energy, std::memory_order_relaxed);
     }
 
     bool handleStreamError(int ret) {
