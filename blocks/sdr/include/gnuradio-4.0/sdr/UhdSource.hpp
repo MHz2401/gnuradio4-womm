@@ -83,6 +83,7 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
     std::atomic<gr::Size_t> _corruptionCount{0U};
     std::atomic<gr::Size_t> _streamErrorCount{0U};
     std::atomic<gr::Size_t> _ringFullCount{0U}; // consumer too slow: OUR loss, not the device's
+    std::atomic<gr::Size_t> _resyncCount{0U};   // times the whole array had to be re-aligned
 
     // ★ IS THERE ACTUALLY A RADIO ON THE OTHER END? A sample count proves only that the
     // right NUMBER of samples arrived, which a broken path can satisfy with silence. An
@@ -276,14 +277,44 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
     // finishes before the scheduler starts, so by the time the first start() runs the
     // registry is complete — no count has to be known in advance.
     struct ArmingBarrier {
-        std::mutex               mutex;
-        std::vector<UhdSource*>  members;
-        bool                     armed = false;
+        std::mutex              mutex;
+        std::vector<UhdSource*> members;
+        bool                    armed           = false;
+        bool                    resyncRequested = false;
     };
 
     static ArmingBarrier& barrier() {
         static auto* shared = new ArmingBarrier; // intentional leak: must outlive every block
         return *shared;
+    }
+
+    // Mark the array as needing re-alignment. Done by flag rather than inline so the
+    // resync happens on one thread, once, rather than once per radio that noticed.
+    void requestArrayResync() {
+        auto lock = std::lock_guard(barrier().mutex);
+        barrier().resyncRequested = true;
+    }
+
+    // Re-run the alignment: stop every radio, re-zero every clock on ONE shared PPS edge,
+    // re-arm every radio at one shared instant. Same broadcast shape as the initial arming,
+    // because it is the same operation.
+    [[nodiscard]] bool resyncArrayIfRequested() {
+        {
+            auto lock = std::lock_guard(barrier().mutex);
+            if (!barrier().resyncRequested) {
+                return true;
+            }
+            barrier().resyncRequested = false;
+            barrier().armed           = false;
+        }
+        for (UhdSource* radio : barrier().members) {
+            if (auto stopped = radio->_rxStream.deactivate(); !stopped) {
+                this->emitErrorMessage("resyncArray()", stopped.error());
+                return false;
+            }
+            radio->_resyncCount.fetch_add(1U, std::memory_order_relaxed);
+        }
+        return armAllRadios();
     }
 
     [[nodiscard]] bool armAllRadios() {
@@ -296,11 +327,21 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         const bool externalTime = std::ranges::any_of(members, [](const UhdSource* radio) { return !radio->time_source->empty() && radio->time_source.value != "none"; });
 
         if (externalTime) {
-            // ★ MULTI-DEVICE PPS: wait for ONE transition, then set every radio on the
-            // SAME next edge. Calling set_time_unknown_pps per radio would be wrong twice
-            // over — it waits for a transition and then sleeps a second internally, so
-            // four radios take ~8 s AND each latches a DIFFERENT edge, leaving their
-            // epochs whole seconds apart. Separate devices need the wait done once.
+            // ★ MULTI-DEVICE PPS, and this shape is MEASURED rather than reasoned.
+            //
+            // A timed command is atomic AND HARDWARE-IMPLEMENTED — but atomic PER DEVICE.
+            // set_time_unknown_pps does the two-PPS-tick discipline itself and is exactly
+            // right for one multi_usrp (covering all ITS mboards). Four separate B210s are
+            // four separate multi_usrp objects, so it becomes four independent atomic
+            // commands, each latching whichever edge it happens to reach.
+            //
+            // Measured 2026-08-01 with the last-PPS discriminator below:
+            //     per-radio UNKNOWN_PPS  -> spread 6.000000 s   (different edges)
+            //     broadcast as here      -> spread 0.000000 s   (one shared epoch)
+            //
+            // So the multi-device case needs the SIMD shape: detect ONE transition, then
+            // broadcast the SAME command to every radio. "PPS" arms the next edge without
+            // waiting, so they all latch it together.
             auto&      reference = members.front()->_device;
             const auto lastPps   = reference.getHardwareTime("PPS");
             const auto deadline  = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
@@ -333,8 +374,15 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         // plus an offset, which is a race that gives each radio a different start. It must
         // also be comfortably AHEAD of where the clocks are now, or the command is late
         // and UHD answers LATE_COMMAND rather than streaming.
+        // A TIMED COMMAND. activate() with SOAPY_SDR_HAS_TIME carries a time_spec, and the
+        // B210 handles the edge discipline itself — including the two-PPS-tick safety that
+        // makes timed commands cost what they do. We do NOT compute PPS boundaries, round to
+        // whole seconds, or wait for edges here: that is the device's job, it already does
+        // it correctly, and rebuilding it is how a working default gets ruined.
+        // All that is owed is one absolute instant on the shared epoch, far enough ahead
+        // that the command is not already late.
         const auto      nowNs = static_cast<long long>(members.front()->_device.getHardwareTime());
-        const long long armAt = nowNs + 500'000'000LL;
+        const long long armAt = nowNs + 1'000'000'000LL;
 
         // START_CONTINUOUS at a shared absolute instant. Two alternatives were tried and
         // rejected, both on evidence:
@@ -466,8 +514,21 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         switch (ret) {
         case SOAPY_SDR_OVERFLOW: {
             const gr::Size_t total = _overflowCount.fetch_add(1U, std::memory_order_relaxed) + 1U;
-            // No re-anchor flag is needed any more: every chunk carries its own device
-            // stamp, so the chunk after a discontinuity re-anchors the mapping by itself.
+            // ★ AN UNEXPECTED OVERFLOW BREAKS THE SIMD INVARIANT, AND THE ONLY ANSWER IS TO
+            // RESYNC. UHD's paradigm is one command to all radios, each acting on it at what
+            // its own clock says is T — which makes the SAMPLE INDEX the shared address
+            // space across the array. A radio that drops samples has lost its place in that
+            // index: it keeps streaming, its counters look healthy, and sample n on this
+            // radio is no longer sample n on the others. Counting and continuing therefore
+            // leaves a SILENTLY MISALIGNED lane, which is worse than a visible stop, because
+            // every cross-radio quantity computed afterwards is wrong and nothing says so.
+            //
+            // Alignment is a property of the SET, not of one radio, so the whole array
+            // resyncs together. Deliberate discontinuities (a retune) are anticipated and
+            // must not come through here.
+            requestArrayResync();
+            // Device time itself needs no repair: every chunk carries its own stamp, so the
+            // chunk after the discontinuity re-anchors the sample<->time mapping by itself.
             if (verbose_events && (total <= 4U || std::has_single_bit(total))) {
                 std::println(stderr, "[UhdSource] device overflow #{}", total);
             }

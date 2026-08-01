@@ -121,6 +121,96 @@ transmit.
 
 ---
 
+## ★ THE SIMD PARADIGM — WHY ALIGNMENT IS THE WHOLE POINT
+
+**Owner, 2026-08-01. This is the model to design against, and most of the day's mistakes
+came from not having it.**
+
+UHD's paradigm — which Soapy follows, for the B210 and for other platforms — is that **you
+issue ONE command to all the radios at the same time and they each know what to do with
+it.** There are special forms where they differ (listening or transmitting on different
+frequencies), but it is very much **a SIMD-like paradigm for radio commands.**
+
+**The consequence, and it is the reason alignment matters at all.** A broadcast command
+carries a time, and every radio acts on it at what *its own* clock says is T. So:
+
+- If the clocks agree, **the sample index is a shared address space**: sample *n* is the
+  same physical instant on every channel of every radio, and the array is **one
+  instrument**.
+- If they do not, one broadcast command silently becomes N different actions, sample *n*
+  addresses nothing coherent, and you have four radios rather than an instrument. This is
+  what C-7 means by *"the number that says four radios can be treated as one instrument."*
+
+**So identical sample counts are not pedantry — they are the observable that says the lanes
+are in step.** Do not explain a spread away. The owner's rule: *when the samples are not
+aligned, stop looking at anything else.* It makes no sense to discuss phase, epoch, or any
+cross-radio quantity before that holds.
+
+### Why an unexpected over/underflow means RESYNC, and nothing else
+
+**Owner: when you get unexpected underflows, the only thing to do is resync.** The reason
+follows from the paradigm rather than from the lost samples: a radio that drops samples has
+**lost its place in the shared index.** It keeps streaming, its counters look healthy, and
+sample *n* on that radio is no longer sample *n* on the others. Counting and continuing
+leaves a **silently misaligned lane**, which is worse than a visible stop — every
+cross-radio quantity computed afterwards is wrong and nothing says so.
+
+Alignment is a property of **the set**, so the whole array resyncs together. Deliberate
+discontinuities — a retune — are *anticipated* and must not trigger it.
+
+### Timed commands are ATOMIC UNITS — do not decompose them
+
+**Owner:** timed commands are **atomic units**, used by both the Soapy and the UHD driver and
+**implemented in hardware** in the B210 and other UHD devices. Other radios do the same; it
+is a common paradigm. They cost seconds because they use **two PPS ticks** — the first tells
+you unambiguously where you are, the command acts on the **next**, so the target edge cannot
+fall either side of a boundary for different radios. The same trick is used at start-up.
+
+**The rule: hand the device a command and a time. Do not compute PPS boundaries, round to
+whole seconds, poll for edges, or sleep.** All of that is the device's job, in hardware, and
+it already does it correctly. This session rebuilt it four separate times — arming, retune,
+resync, and boundary rounding — and every one of them was deleted again.
+
+**But atomicity is PER DEVICE, and that is the one place work remains.** `set_time_unknown_pps`
+is exactly right for one `multi_usrp` (covering all *its* mboards). Four separate B210s are
+four separate `multi_usrp` objects, so it degenerates into four independent atomic commands,
+each latching whichever edge it happens to reach. **Measured 2026-08-01** with the last-PPS
+discriminator:
+
+| approach | last-PPS spread across four radios |
+|---|---|
+| `UNKNOWN_PPS` issued per radio | **6.000000 s** — different edges, not one instrument |
+| detect ONE transition, then broadcast `PPS` to all | **0.000000 s** — one shared epoch |
+
+So the multi-device case is exactly the SIMD shape: **one detection, then the same command to
+every radio.** That is the only part we implement, and only because the atomic primitive does
+not span devices.
+
+**The discriminator itself matters as much as the result.** `get_time_last_pps()` reads each
+radio's own clock reporting its own last edge: same edge → sub-millisecond, different edges →
+**whole seconds**. Two hypotheses ~1000× apart, which is what makes it an instrument. Contrast
+the two checks it replaced, both of which read back a literal we had written and would have
+come out identical either way: the "0 ns cross-radio spread at the first tag" (every radio is
+armed at the same literal instant **on its own clock**) and "device time exactly 1 s between
+tags" (arithmetic on the same counter that indexes the tag).
+
+### The startup log — read it before designing against the driver
+
+**`RUN_Start_GR310_OneUnit_TxRx.log`** — GR 3.10, one B200, a Sink and a Source, UHD 4.6.0.0,
+two consecutive runs. Sixty lines of console output that corrected five confident wrong
+inferences in a row, and the single most useful artefact of the session. It shows, in order:
+configuration *before* the start button → flowgraph compiled → process launched → **then**
+device initialisation (detect, USB 3, CODEC, radio control, register loopback self-test) →
+auto-MCR resolving (16 MHz default, then 40 MHz to serve the requested 10 MS/s) → PPS time
+sync → **radio t = 0** → free-running with no consumer → charts instantiate and consumption
+begins, at which point the radio numbers samples from 0 and tags the start.
+
+**Standing practice earned from it: before designing against a subsystem, get a console dump
+of it running.** Reasoning about a mechanism is not a substitute for looking at a trace, and
+it is cheaper to ask for the dump than to retract.
+
+---
+
 ## WHAT DO YOU MEAN BY "19 % WALL COST" ?
 
 We all make up jargon as we work because it saves time.  Tell everyone what it means.
