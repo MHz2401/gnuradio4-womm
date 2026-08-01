@@ -303,6 +303,38 @@ the requested rate. Either way the *rate* is what you set (F-1).
 as possible, which fits both observations. An earlier draft of this document glossed the log's 40 MHz as
 "4× decimation" — **wrong, and corrected by a measurement rather than by more reading.**
 
+### ★ 9.4b — four USB B210s CANNOT be one `multi_usrp`, and nothing coordinates them in software
+
+Owner's hypothesis, 2026-08-01: `multi_usrp` means several USRPs treated as one, as opposed
+to launching independent ones — and perhaps setup is serial because the devices are assigned
+some internal ID that lets them coordinate afterwards.
+
+**First half confirmed.** `multi_usrp` holds one `device::sptr` but counts mboards from
+`_tree->list("/mboards")` (`multi_usrp.cpp:791`), so one device may carry several mboards and
+`ALL_MBOARDS` broadcasts across them. That IS the SIMD primitive, implemented inside UHD.
+
+**But the B200 driver opts out.** `b200_impl.cpp:309` hardcodes `const fs_path mb_path =
+"/mboards/0"` — one mboard per device, always. And `b200_find` (`:184`) walks
+`separate_device_addr(hint)`, UHD's helper for the `addr0=…,addr1=…` multi-device syntax, then
+**returns an empty list if any entry carries `addr` or `resource`**: the driver explicitly
+refuses the addressing scheme by which networked USRPs (X300 and friends) become one device
+with several mboards.
+
+⇒ **Four USB B210s are four devices, four mboards-0, four `multi_usrp` objects.** The atomic
+timed command cannot span them, which is why the multi-device epoch needs an external
+broadcast (measured in §9.5: per-radio `UNKNOWN_PPS` → 6.000000 s spread; one detection then
+broadcast → 0.000000 s).
+
+**Second half not supported.** The serialisation is a plain global lock — `static std::mutex
+_device_mutex` (`device.cpp:23`), taken as the first statement of `device::make` and held
+through discovery *and* construction (§9.1). The neighbouring `hash_to_device` weak_ptr cache
+exists to *reuse* an already-open device, not to coordinate separate ones, and no inter-device
+ID or shared state is created anywhere on that path.
+
+⇒ **Four B210s are strangers to each other. Every bit of their coordination arrives over the
+Octoclock cables and none of it through software** — which is what makes the sub-mm
+cable-length discipline load-bearing: there is no software layer that could compensate for it.
+
 ### 9.5 — `set_time_unknown_pps()` in full, and it is the owner's described sequence
 
 `host/lib/usrp/multi_usrp.cpp:491-520`. One call does exactly this:
