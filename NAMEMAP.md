@@ -126,6 +126,53 @@ empty string (`:858`), so probing `hasHardwareTime("CMD")` answers **false** whi
 **Layer 2 consequence**: the "five device-wide setters" are really **four distinct operations plus one
 deprecated alias**. Drop `setCommandTime` from the design; use `setHardwareTime(t, "CMD")`.
 
+## 4b · ★ What SoapyUHD does NOT override — stubs, not straight-through calls
+
+Owner's question, 2026-08-01: are the empty interfaces intended as straight-through calls to
+SoapySDR? It seems odd that SoapySDR does UHD-like things, GR 3.10's UHD blocks do UHD-like
+things, and yet SoapyUHD does not have the same UHD behaviour as SoapySDR.
+
+**Answer: no. Not-overridden means not-available.** The base implementations in
+`vendor/SoapySDR/lib/Device.cpp` are no-ops, not delegations:
+
+| base method | default |
+|---|---|
+| `hasHardwareTime` (`:638`) | `return false;` |
+| `getHardwareTime` (`:643`) | `return 0;` |
+| `setCommandTime` (`:653`) | `return;` |
+| `getSettingInfo` (`:732`, `:761`) | empty `ArgInfoList` |
+| `writeSetting` (`:751`, `:780`) | **`return;` — silently succeeds** |
+| `readSetting` (`:756`, `:785`) | `return "";` |
+
+**But the lineage the owner described is visible in one place, and it explains the oddity.**
+The *device-agnostic* base class contains:
+
+```cpp
+void SoapySDR::Device::setHardwareTime(const long long timeNs, const std::string &what) {
+    if (what == "CMD") this->setCommandTime(timeNs, what);
+}
+```
+
+**The generic base special-cases `"CMD"`** — UHD's command-time vocabulary sitting in the layer
+that is supposed to know nothing about UHD. That is the fingerprint of SoapySDR having been
+SoapyUHD generalised. **SoapySDR carries UHD's VOCABULARY but not UHD's BEHAVIOUR**: the shape
+is UHD-shaped because it was UHD, and the behaviour must be supplied by whichever driver loads.
+Where SoapyUHD declines to supply it you get the stub, and you fall through to nothing.
+
+**SoapyUHD overrides**: `hasHardwareTime` (`:859`), `setHardwareTime` (`:870`),
+`getHardwareTime`, `setCommandTime` (`:881`), and all streaming, tuning and clock methods.
+
+**SoapyUHD does NOT override**: `writeSetting`, `readSetting`, `getSettingInfo` — none of the
+three, at either device or channel scope.
+
+### ⚠ Consequence: `device_settings` on a UHD device is a guaranteed silent no-op
+
+`writeSetting`'s base default is `return;`. SoapyUHD does not override it. So every key=value
+pair sent through `device_settings` is **accepted and discarded with no error and no warning**.
+`PARAMS.md` §E lists `device_settings` as unverified; it is worse than unverified, and this is
+the mechanism. `UhdSource` does not carry the setting at all (D-5), which is now a documented
+decision rather than an accident.
+
 ## 5 · ★ Timed retune from plain SoapySDR — the recipe, confirmed
 
 Owner's expectation was that sophisticated timed operations are reachable from regular SoapySDR. For
