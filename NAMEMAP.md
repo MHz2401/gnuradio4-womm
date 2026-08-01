@@ -398,6 +398,18 @@ some internal ID that lets them coordinate afterwards.
 refuses the addressing scheme by which networked USRPs (X300 and friends) become one device
 with several mboards.
 
+**SoapyUHD is BIDIRECTIONAL, and both directions were checked**, since the package name covers
+two separate bridges:
+
+| file | direction | mboards |
+|---|---|---|
+| `SoapyUHDDevice.cpp` | Soapy app → **UHD hardware** (what we use) | via `b200_impl.cpp:309` → `/mboards/0` |
+| `UHDSoapyDevice.cpp` | **UHD app** → Soapy device ("a UHD module that supports Soapy devices within the UHD API") | `:215` → `/mboards/0` |
+
+**Both hardcode a single mboard**, so the reverse bridge offers no way to aggregate either.
+Multi-mboard `multi_usrp` is a property of the NETWORKED device drivers, which build one device
+from `addr0=…,addr1=…`; USB B210s cannot reach it from either side.
+
 ⇒ **Four USB B210s are four devices, four mboards-0, four `multi_usrp` objects.** The atomic
 timed command cannot span them, which is why the multi-device epoch needs an external
 broadcast (measured in §9.5: per-radio `UNKNOWN_PPS` → 6.000000 s spread; one detection then
