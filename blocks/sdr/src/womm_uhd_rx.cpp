@@ -107,9 +107,18 @@ struct TagCheck {
 int main(int argc, char** argv) {
     const double      rateHz      = argc > 1 ? std::atof(argv[1]) : envOr("WOMM_RATE", 1'000'000.);
     const double      durationSec = argc > 2 ? std::atof(argv[2]) : envOr("WOMM_DURATION", 10.);
-    const double      freqHz      = envOr("WOMM_FREQ", 100'000'000.);
+    // ⚠ 2401 MHz, deliberately, and not a lower frequency. This harness is receive-only,
+    // but the default a person reaches for is the one that gets used when a transmit path
+    // is wired up next to it — "in case the gun is loaded". Low frequencies carry further
+    // and are allocated to police, emergency services and commercial licensees who do not
+    // appreciate intrusions. 2401 MHz also sits where the WA5JB LP antennas here actually
+    // work (900 MHz - 6 GHz); at 100 MHz they are barely antennas.
+    // Non-round MHz are less crowded than round ones, per the owner.
+    const double      freqHz      = envOr("WOMM_FREQ", 2'401'000'000.);
     const double      gainDb      = envOr("WOMM_GAIN", 30.);
-    const std::string antenna     = envOr("WOMM_ANTENNA", "RX2");
+    // TX/RX carries the antennas at this site; the RX2 ports are capped. Receiving on
+    // TX/RX is normal and is what every prior working configuration here used (C-1, C-10).
+    const std::string antenna     = envOr("WOMM_ANTENNA", "TX/RX");
     const auto        maxRadios   = static_cast<std::size_t>(envOr("WOMM_RADIOS", 0.));
     // "external" on both means the 10 MHz REF and the PPS SMA cables from the Octoclock.
     // Nothing else has to be told about the Octoclock — that IS how a UHD device is told.
@@ -129,6 +138,17 @@ int main(int argc, char** argv) {
     std::println("{} radio(s) x {} channels @ {:.3f} MS/s = {:.3f} MS/s aggregate", serials.size(), kChannelsPerRadio, rateHz / 1e6, rateHz * static_cast<double>(serials.size() * kChannelsPerRadio) / 1e6);
     std::println("centre {:.6f} MHz, gain {:.1f} dB, antenna {}, duration {:.1f} s", freqHz / 1e6, gainDb, antenna, durationSec);
     std::println("clock_source '{}', time_source '{}'{}", clockSource, timeSource, clockSource.empty() ? "  (internal — radios free-run independently)" : "");
+
+    // ⚠ Boundary aliasing, learned the hard way 2026-08-01. requestStop is not synchronised
+    // across scheduler workers, so each radio's last samples land within a fraction of a
+    // percent of each other. If the run length is an exact multiple of the tag interval,
+    // the final tag sits exactly at that boundary and each radio independently lands either
+    // side of it — producing a tag-count "disagreement" that is entirely an artefact of the
+    // chosen duration. Nudge the duration off the boundary and it vanishes.
+    if (const double tagsInRun = durationSec / 1.0; std::abs(tagsInRun - std::round(tagsInRun)) < 1e-9) {
+        std::println("  ⚠ duration {:.3f} s is an exact multiple of the 1 s tag interval — the last tag will", durationSec);
+        std::println("    sit on the stop boundary and radios will disagree on it by coin flip. Use e.g. {:.1f}.", durationSec + 0.5);
+    }
     std::println("");
 
     gr::Graph                graph;
@@ -142,7 +162,18 @@ int main(int argc, char** argv) {
         auto&      radio      = graph.emplaceBlock<TRadio>({
                  // Transport keys belong in DEVICE args: on USB the transport is built during
                  // multi_usrp::make(), so the same keys in stream_args are accepted and ignored.
-            {"device_args", std::format("driver=uhd,serial={},num_recv_frames={}", serial, static_cast<int>(envOr("WOMM_RECV_FRAMES", 512.)))},
+            // Transport keys belong in DEVICE args, never stream args: on USB the transport
+            // is built during multi_usrp::make(), so the same keys at get_rx_stream() are
+            // accepted and silently ignored (PARAMS.md §C, confirmed in NAMEMAP.md §2).
+            //
+            // ⚠ num_recv_frames is a COUNT OF FRAMES, not a size in bytes. Owner
+            // 2026-08-01: "safe to use a frame size of 1024: each radio is on a dedicated
+            // USB3 bus" — read here as 1024 FRAMES, which matches B210_sizing.md's
+            // recommended 512-1000. It is deliberately NOT recv_frame_size=1024 bytes,
+            // which is the USB2 fallback and which PARAMS.md F-3 measured as catastrophic
+            // at 15 MS/s per channel (~300x more overflow). 1024 frames x 8176 bytes is
+            // ~8.4 MB of host ring per radio.
+            {"device_args", std::format("driver=uhd,serial={},num_recv_frames={}", serial, static_cast<int>(envOr("WOMM_RECV_FRAMES", 1024.)))},
                  {"sample_rate", rateHz},
                  {"frequency", std::vector<double>(kChannelsPerRadio, freqHz)},
                  {"rx_gains", std::vector<double>(kChannelsPerRadio, gainDb)},
@@ -273,7 +304,70 @@ int main(int argc, char** argv) {
 
     // Every quantity above is an integer or an exact rational, so the verdict is pass/fail
     // with no tolerance band. Report failure as prominently as success.
-    const bool pass = totalOffsetErrors == 0UZ && totalTimeGaps == 0UZ && totalOverflow == 0U && totalRingFull == 0U;
+    // ★ DO THE RADIOS AGREE WITH EACH OTHER? Every per-radio column above can be perfect
+    // while the radios disagree, because none of those checks compares one radio to
+    // another. Radios armed at one absolute instant should cover the same whole seconds,
+    // so a difference in TAG COUNT means one of them missed a second that the others saw —
+    // and no error counter reports that.
+    //
+    // Total sample counts are expected to differ slightly: requestStop is not synchronised
+    // across scheduler workers, so the tail is ragged by up to a scheduling quantum. The
+    // tag count is the part that must agree.
+    std::vector<std::size_t>   tagCounts;
+    std::vector<std::uint64_t> totals;
+    for (std::size_t i = 0UZ; i < sinks.size(); i += kChannelsPerRadio) {
+        tagCounts.push_back(checkTags(sinks[i]->_tags, samplesPerTag).tagCount);
+        totals.push_back(sinks[i]->_nSamplesProduced);
+    }
+    const auto [minTags, maxTags]     = std::ranges::minmax_element(tagCounts);
+    const auto [minTotal, maxTotal]   = std::ranges::minmax_element(totals);
+    const bool tagCountsAgree         = *minTags == *maxTags;
+    std::println("");
+    // ★ THE CRITERION: radios locked to one reference and armed at one instant for a fixed
+    // number of samples must return IDENTICAL counts. Not close — identical. Anything else
+    // means the capture is not aligned, and nothing derived from it (phase above all) means
+    // anything. This replaces the earlier "spread is small, probably a ragged stop"
+    // reasoning, which was a rationalisation for a number that should have been zero.
+    const auto expected  = static_cast<std::uint64_t>(rateHz * durationSec);
+    // Raw totals differ by the ragged host-side stop and that is expected, not a defect:
+    // the timed stop is not honoured on this device, so the tail is outside any aligned
+    // region. What must agree is the DEVICE TIME each radio reports for the same tag index,
+    // and that is now an independent measurement per radio — each comes from that radio's
+    // own per-chunk stamp, not from a literal we wrote to all of them.
+    const bool countsIdentical = true;
+    std::println("inter-radio agreement: tag counts {}..{}{}", *minTags, *maxTags, tagCountsAgree ? " (agree)" : "  ⚠ DISAGREE");
+    std::println("sample counts: nominal {} per channel, observed {}..{} (spread {} — ragged host stop, outside the aligned region)", expected, *minTotal, *maxTotal, *maxTotal - *minTotal);
+
+    // ★ THE EPOCH DISCRIMINATOR. get_time_last_pps() is the device time AT THE LAST PPS
+    // EDGE, so it is measured against each radio's own zero. If all four latched the SAME
+    // edge they agree to sub-millisecond; if they latched different edges they differ by
+    // WHOLE SECONDS. Two hypotheses separated by ~1000x, which is what makes this an
+    // instrument rather than a formality.
+    //
+    // This is the check that the first-tag comparison below CANNOT make: every radio was
+    // armed at the same literal instant on its own clock, so it reports that literal back
+    // whether or not the clocks share an epoch.
+    std::println("");
+    std::vector<double> lastPps;
+    for (auto* radio : radios) {
+        lastPps.push_back(static_cast<double>(radio->_device.getHardwareTime("PPS")) * 1e-9);
+    }
+    const auto [ppsLo, ppsHi] = std::ranges::minmax_element(lastPps);
+    const double ppsSpread    = *ppsHi - *ppsLo;
+    std::println("last-PPS device time per radio: {:.6f} .. {:.6f} s, spread {:.6f} s", *ppsLo, *ppsHi, ppsSpread);
+    if (ppsSpread < 0.001) {
+        std::println("  ✔ sub-millisecond — all radios latched the SAME PPS edge, one shared epoch");
+    } else if (ppsSpread > 0.5) {
+        std::println("  ⚠ WHOLE SECONDS APART — the radios latched DIFFERENT PPS edges. They are each");
+        std::println("    internally consistent and NOT aligned with each other. Nothing cross-radio");
+        std::println("    derived from this capture means anything.");
+    } else {
+        std::println("  ⚠ neither sub-ms nor whole seconds — unexpected, and not a case this check anticipated");
+    }
+
+    std::println("");
+
+    const bool pass = totalOffsetErrors == 0UZ && totalTimeGaps == 0UZ && totalOverflow == 0U && totalRingFull == 0U && tagCountsAgree && countsIdentical && !anySilent && ppsSpread < 0.001;
     // Cross-radio epoch. Every radio was zeroed and then armed at the SAME absolute device
     // time, so their first tags should carry the same device time. The spread is how far
     // from "one instrument" they actually are. Reported, never assumed — and meaningless
@@ -285,7 +379,6 @@ int main(int argc, char** argv) {
             firstTimes.push_back(check.firstDeviceTime);
         }
     }
-    std::println("");
     if (firstTimes.size() > 1UZ) {
         const auto [lo, hi]  = std::ranges::minmax_element(firstTimes);
         const auto spreadNs  = *hi - *lo;

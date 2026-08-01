@@ -97,12 +97,33 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
     soapy::Device::Stream<T, SOAPY_SDR_RX> _rxStream{};
     std::array<detail::UhdRing<T>, nPorts> _rings{};
 
-    // The device clock anchor: device time in ns at absolute sample index _anchorSample.
-    // Re-set on every discontinuity, so a consumer can always map samples to device time.
-    std::atomic<std::int64_t>  _anchorDeviceTimeNs{0};
-    std::atomic<std::uint64_t> _anchorSample{0U};
-    std::atomic<bool>          _anchorValid{false};
-    std::atomic<bool>          _reanchorPending{false};
+    // ★ PER-CHUNK DEVICE TIME. The radio and its tags are the source of truth for time and
+    // for how much data was captured — there is nothing more accurate to check them
+    // against, and the host's "nanosecond" clock is really a 30-50 ns clock, so trying
+    // would only measure the host. What we owe the truth is to CARRY it, not to
+    // extrapolate it.
+    //
+    // The device stamps EVERY chunk. An earlier version kept one anchor for a whole run
+    // and extrapolated from it, which silently substituted our arithmetic for the device's
+    // measurement. Now each chunk's reported time is retained with the absolute sample
+    // index it belongs to, so a tag interpolates at most within one chunk (~2040 samples)
+    // from a time the device actually reported.
+    //
+    // Note on units: SoapyUHD hands us long long nanoseconds
+    // (SoapyUHDDevice.cpp:315, md.time_spec.to_ticks(1e9)). That is NOT a meaningful loss —
+    // the device timestamps in integer master-clock TICKS (25 ns at 40 MHz, ~16.3 ns at
+    // 61.44 MHz), so nanoseconds are already finer than its own grid. int64 ns spans +/-292
+    // years at 1 ns, so it does not suffer the precision loss that makes UHD split
+    // time_spec_t into full_secs + frac_secs in the first place.
+    struct ChunkStamp {
+        std::uint64_t startSample = 0U;
+        std::int64_t  deviceTimeNs = 0;
+        bool          valid        = false;
+    };
+    static constexpr std::size_t kStampHistory = 1024UZ; // >> chunks per tag interval at any sane rate
+    std::array<ChunkStamp, kStampHistory>  _stamps{};
+    std::atomic<std::uint64_t>             _stampWrite{0U};
+    std::atomic<std::uint64_t>             _chunkBoundary{0U}; // absolute index of the most recent chunk start
 
     std::uint64_t _samplesProduced = 0U; // consumer side only; absolute index of the next sample to publish
     std::uint64_t _samplesPerTag   = 0U;
@@ -171,8 +192,8 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         _corruptionCount.store(0U, std::memory_order_relaxed);
         _streamErrorCount.store(0U, std::memory_order_relaxed);
         _ringFullCount.store(0U, std::memory_order_relaxed);
-        _anchorValid.store(false, std::memory_order_relaxed);
-        _reanchorPending.store(false, std::memory_order_relaxed);
+        _stampWrite.store(0U, std::memory_order_relaxed);
+        _stamps.fill(ChunkStamp{});
         for (auto& ring : _rings) {
             ring.reset(std::bit_ceil(static_cast<std::size_t>(ring_capacity.value)));
         }
@@ -312,8 +333,25 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         // plus an offset, which is a race that gives each radio a different start. It must
         // also be comfortably AHEAD of where the clocks are now, or the command is late
         // and UHD answers LATE_COMMAND rather than streaming.
-        const auto  nowNs    = static_cast<long long>(members.front()->_device.getHardwareTime());
+        const auto      nowNs = static_cast<long long>(members.front()->_device.getHardwareTime());
         const long long armAt = nowNs + 500'000'000LL;
+
+        // START_CONTINUOUS at a shared absolute instant. Two alternatives were tried and
+        // rejected, both on evidence:
+        //   - NUM_SAMPS_AND_DONE is the BURSTING special case. stream_cmd_t::num_samps is
+        //     a uint64_t, so the API imposes no practical ceiling; nevertheless this B210
+        //     accepted 255e6 and refused 270e6 with STREAM_ERROR, so a limit exists
+        //     somewhere in the device path. It also carries a samples-per-cycle
+        //     constraint the Ettus docs warn about, and in practice one radio silently
+        //     delivered 226e6 of a requested 262.5e6 with every counter reading zero.
+        //     Owner, from C++ experience: problematic, do not bother.
+        //   - A TIMED STOP is not honoured on a B200. SoapyUHD's own comment hedges it
+        //     ("stop mode might support a timestamp"); issuing it ended the stream at once,
+        //     one sample per channel.
+        // So the stop is host-side and the tail is ragged BY CONSTRUCTION. Raw totals will
+        // differ. Alignment is therefore established from the TAGS — device time against
+        // exact sample index — not from the raw counts, and the ragged tail simply falls
+        // outside the aligned region.
         for (UhdSource* radio : members) {
             if (auto activated = radio->_rxStream.activate(SOAPY_SDR_HAS_TIME, armAt, 0UZ); !activated) {
                 this->emitErrorMessage("armAllRadios()", activated.error());
@@ -360,10 +398,12 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
             }
 
             const auto count = static_cast<std::size_t>(ret);
-            if ((flags & SOAPY_SDR_HAS_TIME) != 0 && (!_anchorValid.load(std::memory_order_relaxed) || _reanchorPending.exchange(false, std::memory_order_acq_rel))) {
-                _anchorDeviceTimeNs.store(static_cast<std::int64_t>(timeNs), std::memory_order_relaxed);
-                _anchorSample.store(written, std::memory_order_relaxed);
-                _anchorValid.store(true, std::memory_order_release);
+            // Retain what the DEVICE said about THIS chunk, every chunk. No extrapolation
+            // and no anchor that ages across a run.
+            if ((flags & SOAPY_SDR_HAS_TIME) != 0) {
+                const auto slot = _stampWrite.load(std::memory_order_relaxed);
+                _stamps[slot % kStampHistory] = ChunkStamp{.startSample = written, .deviceTimeNs = static_cast<std::int64_t>(timeNs), .valid = true};
+                _stampWrite.store(slot + 1U, std::memory_order_release);
             }
 
             // Push all channels or none: a partial push would skew one channel's index.
@@ -375,7 +415,6 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
                 // The consumer is behind. This is OUR overflow, distinct from the device's,
                 // and it is counted separately so the two are never confused in a report.
                 _ringFullCount.fetch_add(1U, std::memory_order_relaxed);
-                _reanchorPending.store(true, std::memory_order_release);
                 continue;
             }
             for (std::size_t ch = 0UZ; ch < nPorts; ++ch) {
@@ -410,12 +449,25 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         _sumSquares[ch].store(_sumSquares[ch].load(std::memory_order_relaxed) + energy, std::memory_order_relaxed);
     }
 
+    // Newest stamp whose chunk starts at or before `sample`. Walks backwards from the most
+    // recent, so it terminates in one step in the common case.
+    [[nodiscard]] ChunkStamp findStampFor(std::uint64_t sample) const {
+        const auto written = _stampWrite.load(std::memory_order_acquire);
+        for (std::uint64_t back = 0U; back < std::min<std::uint64_t>(written, kStampHistory); ++back) {
+            const ChunkStamp& candidate = _stamps[(written - 1U - back) % kStampHistory];
+            if (candidate.valid && candidate.startSample <= sample) {
+                return candidate;
+            }
+        }
+        return ChunkStamp{};
+    }
+
     bool handleStreamError(int ret) {
         switch (ret) {
         case SOAPY_SDR_OVERFLOW: {
             const gr::Size_t total = _overflowCount.fetch_add(1U, std::memory_order_relaxed) + 1U;
-            // The sample-to-time mapping just broke, so the next chunk must re-anchor it.
-            _reanchorPending.store(true, std::memory_order_release);
+            // No re-anchor flag is needed any more: every chunk carries its own device
+            // stamp, so the chunk after a discontinuity re-anchors the mapping by itself.
             if (verbose_events && (total <= 4U || std::has_single_bit(total))) {
                 std::println(stderr, "[UhdSource] device overflow #{}", total);
             }
@@ -449,14 +501,24 @@ k * samples_per_tag, so sample index and device time stay one quantity in two un
         }
         tag::put(map, "sample_index", _samplesProduced);
 
-        if (_anchorValid.load(std::memory_order_acquire)) {
-            const auto anchorNs   = _anchorDeviceTimeNs.load(std::memory_order_relaxed);
-            const auto anchorIdx  = _anchorSample.load(std::memory_order_relaxed);
-            const auto deltaNs    = static_cast<std::int64_t>(static_cast<unsigned __int128>(_samplesProduced - anchorIdx) * 1'000'000'000U / static_cast<unsigned __int128>(sample_rate));
-            const auto deviceTime = anchorNs + deltaNs;
-            tag::put(map, "rx_time_ns", deviceTime);
+        // Find the chunk the device stamped that CONTAINS this sample, and interpolate only
+        // inside it. The stamp is the device's measurement; the interpolation spans at most
+        // one chunk and is exact, because sample count and device time are one quantity
+        // related by a rate the device itself derived.
+        if (const ChunkStamp stamp = findStampFor(_samplesProduced); stamp.valid) {
+            const auto deltaSamples = _samplesProduced - stamp.startSample;
+            const auto deltaNs      = static_cast<std::int64_t>(static_cast<unsigned __int128>(deltaSamples) * 1'000'000'000U / static_cast<unsigned __int128>(sample_rate));
+            const auto deviceTime   = stamp.deviceTimeNs + deltaNs;
+            // Carried as the split UHD uses, not only as one integer: full seconds stay
+            // exact however large the absolute time grows, which is the whole reason
+            // time_spec_t is shaped that way.
             tag::put(map, "rx_time_full_secs", static_cast<std::int64_t>(deviceTime / 1'000'000'000));
             tag::put(map, "rx_time_frac_secs", static_cast<double>(deviceTime % 1'000'000'000) * 1e-9);
+            tag::put(map, "rx_time_ns", deviceTime);
+            // How far this tag sits from a time the device actually reported. Zero means the
+            // tag landed on a chunk boundary; anything else is the span of the interpolation,
+            // stated rather than hidden.
+            tag::put(map, "rx_time_interp_samples", static_cast<std::uint64_t>(deltaSamples));
         }
 
         tag::put(map, "rx_overflow_count", static_cast<std::uint64_t>(_overflowCount.load(std::memory_order_relaxed)));
