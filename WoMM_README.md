@@ -38,6 +38,10 @@ Everything below is **unique to the `-womm` fork**. Everything not listed is ups
 
 | path | what it is |
 |---|---|
+| **`TIME_PROVENANCE.md`** | **★★★ READ FIRST. The radios' tags are the source of truth; never mix time bases. Start-up order, the immutables, the provenance table, expected vs unexpected desync, and how to build an instrument rather than a formality** |
+| `NAMEMAP.md` | verified UHD ↔ SoapyUHD ↔ SoapySDR command and setting names, each row with how it was verified — and what is *not* discoverable through any API |
+| `B210_sizing.md` | frame and ring figures; the "just under a power of two" rule |
+| `RUN_Start_GR310_OneUnit_TxRx.log` | a real GR 3.10 start-up console trace. Get a dump before designing against a subsystem |
 | `DESIGN_UhdSource.md` | **design for a conformant GR4 block over SoapyUHD** — the replacement for the abandoned Soapy block |
 | `PARAMS.md` | **every `SoapySource` parameter: what it claims vs what it reaches** — the broken, the start-only, and what a replacement block must do |
 | `SOAPY_UHD_MAP.md` | **Soapy→UHD parameter map extracted from the driver** — the lumped names, the silent defaults, and which of device/stream/tune args a setting must go in |

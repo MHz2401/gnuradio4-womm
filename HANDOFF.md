@@ -22,6 +22,27 @@ $ tree -L 1 ..
 ```
 
 
+## ★★★ READ FIRST: `TIME_PROVENANCE.md`
+
+**Owner, 2026-08-01: if getting future sessions aligned with one perspective is worth anything,
+it is this one.**
+
+The radios and their tags are the **source of truth** for time and for how much data was
+captured — there is nothing more accurate to check them against, and the host's "nanosecond"
+clock is really a 20–35 ns clock. After start-up only two quantities matter: the **64-bit sample
+index** and **`rx_time`/`tx_time`**, plus `o`/`u` for *unexpected* over/underflow. Every
+synchronised channel must show **the same sample index at the same `rx_time`**; when that fails,
+stop, because everything downstream is meaningless.
+
+**And the trap that motivates the whole document:** mix a value from the radios' time base with
+one from the host clock, or a different base, or relative to an untracked event, and **the
+calculation is wrong while looking entirely plausible** — right units, right magnitude, no
+error. If you cannot name a value's provenance, you cannot compute with it.
+
+**→ `TIME_PROVENANCE.md`.** Read it before writing anything that touches a timestamp.
+
+---
+
 ### Preface:
 
 **SEE ALSO: `HANDOFF-ADDITIONAL-HISTORICAL-DETAILS.md`**.  This is a new sprint and
@@ -122,6 +143,9 @@ transmit.
 ---
 
 ## ★ THE SIMD PARADIGM — WHY ALIGNMENT IS THE WHOLE POINT
+
+**See `TIME_PROVENANCE.md` for the full treatment — start-up order, the immutables, the
+provenance table, and how to tell an instrument from a formality. This section is the summary.**
 
 **Owner, 2026-08-01. This is the model to design against, and most of the day's mistakes
 came from not having it.**
