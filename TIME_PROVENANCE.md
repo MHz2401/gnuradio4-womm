@@ -175,14 +175,31 @@ system, the units, or the magnitude will flag it.**
 
 Each of these was found the hard way, most of them by the owner catching a wrong claim.
 
-**`set_command_time(T)` — a real API, with a silent failure mode.** It exists at
-`multi_usrp.hpp:332`, but its own documentation says: *"the time at which the next command will
-activate"* and **"If the time spec is late, the command will be activated upon arrival."** So a
-late timed command **executes anyway, silently**, and you cannot tell from the result whether it
-ran at T or at whenever it arrived. It is also unclear whether its `T` shares the time base of
-the `rx_time`/`tx_time` you get from tags. **Prefer `set_time_unknown_pps()`, whose semantics
-are unambiguous.** Many timed commands in the UHD API *look* like this one; that resemblance is
-not a reason to trust an unverified one.
+**`set_command_time(T)` — real, current, and still the wrong thing to reach for.**
+
+*Status, checked against the headers actually installed here:* present in **UHD 4.10.0.0** at
+`multi_usrp.hpp:342` as a **pure virtual**, so every `multi_usrp` implementation must provide
+it. **No deprecation marker** anywhere in the header — `UHD_DEPRECATED` and `deprecated` do not
+appear. Its doc string is **byte-identical to 4.6.0.0**, so the semantics have not drifted. It
+is not going away.
+
+⚠ **But the owner could not find it in the UHD and USRP Manual for 4.10.0.0-0-g2af4ddb9
+(https://files.ettus.com/manual/).** A function you can call but cannot look up is its own
+category of hazard — the same shape as `UNKNOWN_PPS`, which is real, load-bearing, and appears
+in no enumeration or manual page. **Treat "in the header but not in the manual" as a reason for
+extra care, not as reassurance.**
+
+⚠ **And the substantive danger, which is why we do not use it.** Its own doc string says: *"the
+time at which the next command will activate"*, and **"If the time spec is late, the command
+will be activated upon arrival."** A late timed command **executes anyway, silently** — nothing
+in the result distinguishes "ran at T" from "ran whenever it got there". It is also unclear
+whether its `T` shares the time base of the `rx_time`/`tx_time` that arrive on tags, which is
+precisely the provenance question this document exists to make you ask.
+
+**Prefer `set_time_unknown_pps()`, whose semantics are unambiguous and which is documented.**
+Many timed commands in the UHD API *look* like this one; the resemblance is not a reason to
+trust an unverified one, and "I recognise this description" is not the same as "I can cite the
+current page for it".
 
 **Timed commands are atomic units, implemented in hardware — but atomic PER DEVICE.** They use
 **two PPS ticks**: one to establish unambiguously where you are, and the command acts on the
