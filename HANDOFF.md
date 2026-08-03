@@ -308,6 +308,10 @@ We're working with the early RC of an open-source project that includes unmainta
   ideas and procedures; **never cut and paste**. This tree is MIT. In-tree gnuradio4 code is MIT and may
   be followed directly. Test: if the result is recognisable as *their* code — same identifiers, structure,
   ordering — it is a copy. See `DESIGN_UhdSource.md` §11b.
+  **⚠ SCOPED EXCEPTION, owner 2026-08-02:** code **may** be reused from **GR 3.11's `UHD: USRP
+  Source/Sink`** where it exemplifies time-provenance-first and does not break the GR4 scheduler
+  model. GR 3.11 is GPL-3.0, so that makes a GPL derivative — record each reuse in `DRIFT.md`
+  Category E with file and line. No reuse from the GR4 SoapySDR block without explicit permission.
 - **No pull requests to upstream** (`gnuradio/gnuradio4*`, `fair-acc/gnuradio4`).
 - **Report regressions as prominently as wins.** Label anything not actually measured.
 - **⚠ NO SERIALS, ABSOLUTE PATHS, OR SITE DETAILS IN THE REPOSITORY.** Radio serials, capture
@@ -328,7 +332,10 @@ you would not be working on the same problem **now**.
 2. for device operations: manufacturer specs; Ettus, Great Scott Gadgets, software and drivers — gnuradio.org,
    pothosware, original authors, etc.
 3. KNOWN CURRENT ITEMS: These Are Not Stale
-    1. `DESIGN_UhdSource.md` : current notes and description **(What are we doing in this session?)**
+    1. `TIME_PROVENANCE.md` : ★★★ time, provenance, and what "works" actually means. **Read first.**
+    2. `NEXT_STEPS_DESIGN_Session_Start_20260802.md` : **current strategy (what are we doing this session?)**
+    3. `NAMEMAP.md` : verified UHD ↔ SoapyUHD ↔ SoapySDR names, each row with how it was verified
+    4. ⚠ `DESIGN_UhdSource.md` is **SUPERSEDED** — it designs a SoapyUHD-based block, now Tier 3
 
 ---
 
@@ -340,25 +347,26 @@ you would not be working on the same problem **now**.
 
 ## What are we doing in this session?
 
-REF: `DESIGN_UhdSource.md`
+**→ `NEXT_STEPS_DESIGN_Session_Start_20260802.md`** — read it, and read `TIME_PROVENANCE.md`
+before it.
 
-There is no **"real"** SDR block in `gnuradio4`, and we must change that in a specific way
-for a specific reason to solve very specific problems.
+**Build `USRPSource` and `USRPSink` directly on the USRP/UHD API**, time-provenance-first, on the
+`init()`/`start()` lifecycle proven 2026-08-01. Parameters and operations follow **GR 3.11
+`UHD: USRP Source` / `UHD: USRP Sink`**. One extension of ours: fixed-interval tag reporting,
+period given as an external-clock time interval, optionally snapped to the nearest USRP frame
+boundary.
 
-1. There is no item in the gnuradio4 source tree that is a properly implemented SDR block.
-2. This includes the gnurradio4 SDR block. The SDR block is 'not a block', and is only half a radio, despite the 
-   fact it's been allowed in-tree.  As a bonus, it has LGL3 components, which make it not conformant to gnuradio4.
-    1. **PROBLEM (A):** half-a-radio.  Current impl is RX-only RTL-SDR.  Most SDRs transmit and receive, and thus 
-       have two block types:  Source (RX) and Sink (TX)
-    2. **PROBLEM (B):** As-is, SoapySDR-based UHD block poses a risk to hardware through undocumented /
-       easy-to-misidentify parameters (probably, solvable - we take a shortcut to that with SoapyUHD)
-    3. **PROBLEM (C):** Blocking on start.
-        1. Design intent: **_A Block is a responsive state machine_**.
-            1. A Block should not block: this does, for some of the longest-running operations.
-                1. A flowgraph holding a Mutex serially polls all flowgraph blocks to touch their `.start()` propery.
-                2. The process is serial because even if there are a thousand nodes, `start()` has 'button semantics'.
-                3. Most radios, including the B210, take a few seconds to start.
-                4. Now, let's say that the driver or the flowgraph has a 'timeout' of five secconds.
-                    1. What happens if there are four radio blocks, each takes 2.5 sec to start, and the implementation blocks?
-                    2. The flowgraph will timeout, and the flowgraph will not start.
-3. SOLUTION: See `DESIGN_UhdSource.md`, discuss with Owner.
+**Tier 1** = this block fully operational, plus usable UI to exercise the milestones.
+**Tier 3** = anything Soapy-based, including the `UhdSource`/`UhdSink` built on 2026-08-01.
+
+⚠ **`DESIGN_UhdSource.md` is SUPERSEDED.** It designs a SoapyUHD-based block and its §12 open
+questions were answered or overtaken during 2026-08-01. Keep it for the parameter analysis and
+the licence table; do not follow its plan.
+
+### The three problems that started this, and where they stand
+
+| | problem | status |
+|---|---|---|
+| **(A)** | half a radio — RX-only, no Sink | **Sink designed and built** (Soapy-based, Tier 3). `USRPSink` is the Tier-1 version, unbuilt |
+| **(B)** | hardware risk from undocumented / misidentifiable parameters | **`NAMEMAP.md`** — every parameter verified against the device, with how it was verified |
+| **(C)** | blocking on `start()` | **SOLVED.** Initialisation belongs in `init()`, which `Graph::emplaceBlock` calls where no scheduler and no timeout exist. Measured: INIT ~11 s for four radios, blocking, with nothing waiting on it; first sample ~0.5 s after the scheduler starts. Needed a one-line core fix at `LifeCycle.hpp:238`, without which the `init()` hook is structurally unusable |
