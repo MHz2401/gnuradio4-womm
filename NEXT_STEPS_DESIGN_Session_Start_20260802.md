@@ -52,29 +52,53 @@ This block exists to exemplify it. That is the "Works" in Works on My Machine.
 
 ## ⚠ ADDENDA — things that will bite at the start of next session
 
-### 1. ★ Going direct to UHD does NOT solve the multi-device problem
+### 1. ⏸ OPEN QUESTION: one `multi_usrp` per radio, or one across all four?
 
-**The one-mboard limit is UHD's, not Soapy's.** `b200_impl.cpp:309` hardcodes
-`const fs_path mb_path = "/mboards/0"`, and `b200_find` refuses the `addr0=…,addr1=…`
-multi-device syntax outright. So **four USB B210s are four `device` objects and four
-`multi_usrp` objects whichever API you use.**
+**Answer this by reading GR 3.11's `UHD: USRP Source/Sink`, not by reasoning from Soapy.**
 
-⇒ *"use `multi_usrp` commands to issue the same command to all radios"* is limited by the
-driver, not by the wrapper. `ALL_MBOARDS` covers **one B210**. Multi-mboard aggregation belongs
-to the **networked** USRPs (X300 and friends), which build one device from several addresses.
+What is established: `b200_impl.cpp:309` hardcodes `const fs_path mb_path = "/mboards/0"`, so a
+B210 presents **one motherboard with two frontends**.
 
-⇒ **The broadcast loop does not disappear.** Measured this session: per-radio
+⚠ **Do not carry my earlier framing forward.** I argued from `b200_find` refusing the
+`addr0=…,addr1=…` multi-device syntax — but that is **networked-USRP syntax and irrelevant
+here**. A B210 is USB, addressed by `serial=`, and never had an address to begin with. The
+refusal is not evidence about B210 aggregation; it is evidence about a mechanism B210s do not
+participate in.
+
+**So the real question is open**: is **launching four separate `multi_usrp` objects** the right
+thing? **It may well be.** Find worked examples of the multi-device commands *for the B210
+specifically* — one mboard, two frontends, no addresses — rather than generalising from X300-era
+material.
+
+⚠ **What SoapyUHD does is NO LONGER RELEVANT.** GR 3.11's `UHD: USRP Source/Sink` is the new
+standard. It may face this same question; **whatever it does, we do.**
+
+What remains true regardless, because it was measured on this hardware: per-radio
 `set_time_unknown_pps` → **6.000000 s** epoch spread; external REF+PPS with no zeroing →
-**8.509223 s**; one transition detected then broadcast → **0.000000 s**. Plan for the broadcast;
-do not expect the API to remove it.
+**8.509223 s**; one transition detected then broadcast to all → **0.000000 s**. Whatever object
+model is chosen, the epoch must end up shared, and that is the check.
 
-### 2. ★ `assert_no_tx.cmake` is BLIND to a pure-UHD transmit path — fix before any Sink work
+### 2. TX safety — the actual rule, and the mechanism that is merely ours
 
-It matches `SoapySink|writeStream|SOAPY_SDR_TX`. A UHD TX path presents as `tx_streamer`,
-`get_tx_stream`, `send`, `tx_metadata_t` — **none of which it matches.** Every RX-only harness
-would keep passing while linking a transmit path. **This is a safety regression, and it is the
-first thing to fix in the new tree**, alongside `assert_tx_gated.cmake`, which needs the same
-symbol list.
+**⚠ Correcting an attribution I got wrong.** `assert_no_tx.cmake` is **not** an owner
+requirement. It is a mechanism a previous session invented, and I wrongly presented it as the
+safety guarantee and told the owner to "fix it first". **The owner's actual rule is
+behavioural**, stated 2026-08-02:
+
+> **Claude — or agents in general, or unlicensed people — should not do transmit operations.**
+> **Do not write automated tests for TX.**
+
+That is the rule. It is about **who acts**, and about **not automating emission**. It does not
+depend on any build check, and no build check can discharge it.
+
+`assert_no_tx.cmake` is one implementation of the second half: it greps the linked binary for
+`SoapySink|writeStream|SOAPY_SDR_TX`. **Note if we keep relying on it**: a pure-UHD transmit path
+presents as `tx_streamer`, `get_tx_stream`, `send`, `tx_metadata_t` — none of which it matches —
+so it would pass a UHD TX binary silently. Same for `assert_tx_gated.cmake`, also ours.
+
+**Fix the symbol lists if we keep the mechanism; drop it if it is not earning its keep.** Either
+way it is a convenience, not the safeguard, and it must never be cited as the reason something
+is safe to run.
 
 ### 3. `"UNKNOWN_PPS"` is stale vocabulary — use `"external"`
 
