@@ -119,9 +119,31 @@ boundary predates the gate. **No TX test was ever disabled or commented out**; t
 presents as `tx_streamer`, `get_tx_stream`, `send`, `tx_metadata_t` — none of which it matches —
 so it would pass a UHD TX binary silently. Same for `assert_tx_gated.cmake`, also ours.
 
-**Fix the symbol lists if we keep the mechanism; drop it if it is not earning its keep.** Either
-way it is a convenience, not the safeguard, and it must never be cited as the reason something
-is safe to run.
+### ★ And the argument that retires the mechanism entirely (owner, 2026-08-02)
+
+**Automated TX tests would be impossible in GitHub — as would automated RX tests — and dangerous
+outside GitHub if not supervised by a licensed radio operator.**
+
+That leaves the build gate with no environment in which it is the safeguard:
+
+| environment | radios present? | what actually protects |
+|---|---|---|
+| **GitHub CI** | **no** | nothing needs to. No hardware test — TX *or* RX — can run at all. Not a risk, an **impossibility** |
+| **real hardware** | yes | **a licensed operator, present.** No build check can supply one |
+
+⇒ **`assert_no_tx.cmake` and `assert_tx_gated.cmake` guard nothing.** In CI there is nothing to
+guard against; on hardware the guard has to be a person. Keeping them risks the worse failure of
+being *cited* as the reason something is safe to run.
+
+It also explains the shape of the existing tests: `qa_SoapyIntegration`, `qa_SoapyLoopback` and
+`qa_SoapyRaiiWrapper` link TX symbols and run against `SoapyLoopbackModule.cpp`, because a
+**software loopback is the only way to test device code where no device exists.** That is the
+right pattern and should be carried into the USRP work: **hardware-free tests use a fake device;
+hardware tests are operator-supervised and never automated.**
+
+**Recommendation: drop both cmake gates.** Keep `womm_tx_arm`'s runtime interlock — it at least
+checks for a human at a terminal — while remembering that it too is a convenience, and that the
+guarantee is the operator's licence and presence.
 
 ### 3. `"UNKNOWN_PPS"` is stale vocabulary — use `"external"`
 
