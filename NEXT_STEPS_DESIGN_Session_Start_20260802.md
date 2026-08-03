@@ -91,6 +91,15 @@ behavioural**, stated 2026-08-02:
 That is the rule. It is about **who acts**, and about **not automating emission**. It does not
 depend on any build check, and no build check can discharge it.
 
+**Fact worth stating, verified 2026-08-02:** before 2026-08-01 **no transmit-capable binary had
+ever existed in this repository.** All seven pre-existing harnesses link zero TX symbols;
+`assert_no_tx.cmake` was asserting the absence of something never present. **`womm_uhd_tx`,
+created by Claude on 2026-08-01 (commit `3a8b4f6`), is the first** — 5 TX symbols, built and
+gated, never run. Authorised at the time ("build tx side-by-side, just don't run it without me
+here"), but it moved the tree from *transmission structurally absent* to *transmission
+present-but-gated*. If that is not wanted, deleting `womm_uhd_tx.cpp`, `womm_tx_arm.hpp` and
+`assert_tx_gated.cmake` returns it; `UhdSink.hpp` alone links nothing until included.
+
 `assert_no_tx.cmake` is one implementation of the second half: it greps the linked binary for
 `SoapySink|writeStream|SOAPY_SDR_TX`. **Note if we keep relying on it**: a pure-UHD transmit path
 presents as `tx_streamer`, `get_tx_stream`, `send`, `tx_metadata_t` — none of which it matches —
