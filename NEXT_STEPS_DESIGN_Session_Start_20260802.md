@@ -100,6 +100,20 @@ here"), but it moved the tree from *transmission structurally absent* to *transm
 present-but-gated*. If that is not wanted, deleting `womm_uhd_tx.cpp`, `womm_tx_arm.hpp` and
 `assert_tx_gated.cmake` returns it; `UhdSink.hpp` alone links nothing until included.
 
+**And the boundary it actually encodes, verified 2026-08-02.** Owner asked whether a cmake gate
+makes sense only if tests exist that do TX. Three do:
+
+| | TX symbols | talks to |
+|---|---|---|
+| `qa_SoapyIntegration`, `qa_SoapyLoopback`, `qa_SoapyRaiiWrapper` | 721 / 1 / 1 | **software loopback** (`SoapyLoopbackModule.cpp`) — never a radio |
+| all seven pre-existing `womm_*` harnesses | 0 | real radios |
+| `womm_uhd_tx` | 5 | real radios; gated, never run |
+
+So TX code *is* exercised in tests, against a fake device. The gate therefore encodes a real
+boundary — **hardware-touching binaries carry no transmit path; test binaries may** — and that
+boundary predates the gate. **No TX test was ever disabled or commented out**; the only two
+`SKIPPED` lines in the sdr test CMake are ABI-mismatch gates on the loopback module.
+
 `assert_no_tx.cmake` is one implementation of the second half: it greps the linked binary for
 `SoapySink|writeStream|SOAPY_SDR_TX`. **Note if we keep relying on it**: a pure-UHD transmit path
 presents as `tx_streamer`, `get_tx_stream`, `send`, `tx_metadata_t` — none of which it matches —
