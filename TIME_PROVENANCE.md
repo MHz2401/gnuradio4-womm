@@ -183,11 +183,28 @@ it. **No deprecation marker** anywhere in the header — `UHD_DEPRECATED` and `d
 appear. Its doc string is **byte-identical to 4.6.0.0**, so the semantics have not drifted. It
 is not going away.
 
-⚠ **But the owner could not find it in the UHD and USRP Manual for 4.10.0.0-0-g2af4ddb9
-(https://files.ettus.com/manual/).** A function you can call but cannot look up is its own
-category of hazard — the same shape as `UNKNOWN_PPS`, which is real, load-bearing, and appears
-in no enumeration or manual page. **Treat "in the header but not in the manual" as a reason for
-extra care, not as reassurance.**
+✔ **RESOLVED 2026-08-02 — it IS documented; Ettus' site search broke after a host change.**
+The reliable way to look up any UHD function or class member:
+
+```
+https://files.ettus.com/manual/functions_<lowercase-first-letter>.html
+```
+
+e.g. `functions_s.html` for `set_command_time`, `set_time_unknown_pps`, `set_clock_source`.
+**Use this index, not the site search.** A function that is hard to *find* is not the same as a
+function that is undocumented, and the earlier "in the header but not in the manual" warning was
+a search failure rather than a documentation gap.
+
+### ⚠⚠ AND THE THING THAT REALLY MATTERS: `"UNKNOWN_PPS"` HAS BEEN SUPERSEDED BY `"external"`
+
+The current published API uses **`"external"`** where older material used `"UNKNOWN_PPS"`, and
+`"UNKNOWN_PPS"` appears to have been dropped from the online documentation altogether.
+
+**Special caution when reading older GR versions:** the UHD Source/Sink blocks in **GR 3.11 and
+above use `"External"`**, not `"UNKNOWN*"`. So a value copied out of a GR 3.10-era example, or
+out of `SoapyUHDDevice.cpp` (which still maps the string at `:874`), is **stale vocabulary** even
+though it still works through Soapy. Prefer `"external"` and check it against
+`functions_s.html` for the version you are building against.
 
 ⚠ **And the substantive danger, which is why we do not use it.** Its own doc string says: *"the
 time at which the next command will activate"*, and **"If the time spec is late, the command

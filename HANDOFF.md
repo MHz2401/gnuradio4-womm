@@ -41,6 +41,11 @@ error. If you cannot name a value's provenance, you cannot compute with it.
 
 **→ `TIME_PROVENANCE.md`.** Read it before writing anything that touches a timestamp.
 
+**→ `NEXT_STEPS_DESIGN_Session_Start_20260802.md`** is the current strategy: build
+`USRPSource`/`USRPSink` **direct on the USRP/UHD API**, time-provenance-first, on the
+`init()`/`start()` lifecycle proven 2026-08-01. Soapy-based blocks drop to Tier 3. Read its
+**ADDENDA** before writing code — two of them will bite immediately.
+
 ---
 
 ### Preface:
